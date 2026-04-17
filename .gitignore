@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+.venv/
+build/
+dist/
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Fichiers blackbox de test — trop volumineux pour git
+samples/*.bbl
+samples/*.bfl
+samples/*.BBL
+samples/*.BFL
+
+# Logs
+*.log
