@@ -4,91 +4,107 @@ Ce fichier sert à reprendre le projet d'une machine à l'autre. Il consolide le
 
 ---
 
-## Décisions validées (17/04/2026)
+## Décisions validées
 
-### Plateforme
+### Plateforme (17/04/2026)
 **Windows desktop avec PyQt6.**
 - Raison : cohérent avec l'environnement VoixClaire déjà en place (Python 3.11.9 + PyQt6 dispos).
 - Alternative écartée : application web locale (ajoute une complexité backend/frontend inutile).
 - Alternative écartée : CLI + rapport HTML (moins convivial pour un usage "drag & drop fichier").
 
-### Niveau d'automatisation
+### Niveau d'automatisation (17/04/2026)
 **Afficher un diff lisible + explications en français.**
 - L'utilisateur applique les changements lui-même dans Betaflight Configurator.
-- Raison : sécurité (pas de risque de bricker le drone) et pédagogique (l'utilisateur peut apprendre progressivement).
-- Alternative écartée (v1) : génération automatique de CLI dump Betaflight — à considérer en v2 si demandé.
-- Alternative écartée : écriture directe via MSP — trop risqué, nécessite le drone branché, hors scope.
+- Raison : sécurité (pas de risque de bricker le drone) et pédagogique.
+- Alternative écartée (v1) : génération automatique de CLI dump Betaflight — à considérer en v2.
+- Alternative écartée : écriture directe via MSP — trop risqué, hors scope.
 
-### Scope v1
-**Lire + décoder correctement le blackbox.**
-- Fondation technique avant tout.
-- Les recommandations PID/filtres viendront seulement une fois qu'on sait lire les données de façon fiable.
-- v2 = détection de vibrations + alertes mécaniques.
-- v3 = recommandations PID/filtres complètes.
+### Scope v1 (17/04/2026)
+**Lire + décoder + visualiser le blackbox.**
+- v2 = FFT + alertes mécaniques (vibrations, moteur HS, frame desserrée).
+- v3 = recommandations PID/filtres avec explication en français.
 
-### Firmware cible
+### Firmware cible (17/04/2026)
 **Betaflight 4.5 et plus récent.** Quadcopter uniquement (4 moteurs).
+
+### Q1 — Parser blackbox : subprocess + blackbox_decode.exe ✅ TRANCHÉ (17/04/2026)
+**Option A retenue : subprocess vers `blackbox_decode.exe`.**
+- Outil officiel Betaflight, même approche que Plasmatree PID-Analyzer.
+- L'exécutable va dans `tools/blackbox_decode.exe` (exclu du git).
+- Téléchargement : https://github.com/betaflight/blackbox-tools/releases
+- Raison du choix : fiabilité, support de tous les cas edge, pas de maintenance parser.
+
+### Q2 — Bibliothèque de plotting : pyqtgraph ✅ TRANCHÉ (17/04/2026)
+**pyqtgraph retenu.**
+- Intégration native PyQt6, performances supérieures pour données denses (50–8000 Hz).
+- matplotlib envisageable en v3 pour export de rapports statiques.
+
+### Q3 — Fichiers blackbox de test (17/04/2026)
+- Dossier `samples/` local, exclu du git (.gitignore).
+- À récupérer sur le drone réel (MAMBA F722 2022B).
 
 ---
 
-## Questions ouvertes (à trancher)
+## État d'avancement
 
-### Q1 — Parser blackbox : binding C ou Python pur ?
-- Option A : invoquer `blackbox_decode.exe` (fourni par blackbox-tools) en subprocess, parser sa sortie CSV.
-  - ✅ Rapide à mettre en place, fiable (outil officiel).
-  - ❌ Dépendance à un binaire externe, moins portable, plus lent sur gros fichiers.
-- Option B : parser Python pur (comme Plasmatree PID-Analyzer).
-  - ✅ Distribution plus simple (pip install ... et c'est tout).
-  - ❌ À maintenir soi-même si le format évolue.
-- **Décision reportée** — dépend du rapport de recherche en cours.
+### v1 — Prototype fonctionnel (17/04/2026) ✅
 
-### Q2 — Bibliothèque de plotting
-- `pyqtgraph` — rapide, intégration native PyQt.
-- `matplotlib` — standard, plus riche, un peu plus lent.
-- **Décision reportée** — commencer avec pyqtgraph sauf contre-indication.
+Structure de code posée :
+```
+src/
+├── main.py                  ← point d'entrée
+├── parser/
+│   └── blackbox_parser.py   ← subprocess + CSV parsing
+└── ui/
+    ├── main_window.py       ← fenêtre drag & drop
+    └── plot_widget.py       ← GyroPlotWidget + PidPlotWidget (pyqtgraph)
+tools/
+└── README.md                ← instructions pour blackbox_decode.exe
+docs/
+└── research/
+    └── blackbox_format.md   ← notes format + décisions techniques
+```
 
-### Q3 — Où stocker les fichiers blackbox de test ?
-- Ils font souvent plusieurs Mo chacun → exclus du git (via `.gitignore`).
-- Décision : dossier `samples/` local, non commité. À documenter la source dans `samples/README.md` quand on en aura.
+**Pour tester :** il faut `blackbox_decode.exe` dans `tools/` et un vrai fichier `.bbl`/`.bfl`.
+
+---
+
+## Prochaines étapes
+
+1. **Récupérer un fichier blackbox** depuis le drone MAMBA F722 2022B (SD card).
+2. **Télécharger `blackbox_decode.exe`** depuis https://github.com/betaflight/blackbox-tools/releases et le placer dans `tools/`.
+3. **Tester le prototype** : `python src/main.py`, glisser le fichier, vérifier les courbes gyro.
+4. **v1 complète** : corriger les bugs éventuels, affiner l'UX (zoom, sélection de plage de temps).
+5. **v2** : FFT sur gyro pour détecter vibrations, alertes mécaniques.
 
 ---
 
 ## Environnements
 
 ### Machine principale — Papa (DESKTOP-QCBKGND)
-- Là où le développement principal a lieu.
-- Setup à confirmer quand on bascule dessus.
+- Développement principal. Python 3.11+ à confirmer.
+- Pour installer les dépendances : `pip install -r requirements.txt`
 
 ### Machine secondaire — Liam (DESKTOP-8CA9R8L)
-- Windows 10, Python 3.11.9 (via install VoixClaire : `C:\Users\liam0\AppData\Local\VoixClaire\python\python.exe`).
-- Git 2.53.0 installé.
-- PyQt6 déjà installé via l'environnement VoixClaire.
+- Windows 10, Python 3.11.9 (via VoixClaire : `C:\Users\liam0\AppData\Local\VoixClaire\python\python.exe`).
+- Git 2.53.0 installé. PyQt6 déjà présent.
 
 ---
 
-## Reprendre le projet depuis zéro sur l'autre machine
+## Reprendre le projet sur l'autre machine
 
 ```bash
 # 1. Cloner
-git clone <URL_GITHUB> blackbox-analyzer
+git clone https://github.com/bouyous/PID-black-box.git blackbox-analyzer
 cd blackbox-analyzer
 
-# 2. Lire README.md puis ce fichier (docs/PROJECT_MEMO.md)
+# 2. Lire README.md puis ce fichier
 
-# 3. Consulter les rapports de recherche
-ls docs/research/
+# 3. Installer les dépendances
+pip install -r requirements.txt
 
-# 4. Continuer le travail là où on l'a laissé (voir section "Prochaines étapes" ci-dessous)
+# 4. Placer blackbox_decode.exe dans tools/  (voir tools/README.md)
+
+# 5. Lancer
+python src/main.py
 ```
-
----
-
-## Prochaines étapes (à faire sur la machine principale)
-
-1. Explorer le firmware Betaflight (dossier `src/main/blackbox/`) et les outils existants (blackbox-tools, Plasmatree PID-Analyzer, PIDtoolbox) pour comprendre le format du fichier.
-2. Trancher Q1 (parser C vs Python pur) à partir de cette exploration.
-3. Récupérer 2-3 fichiers blackbox de test réels depuis un drone.
-4. Poser un premier prototype : fenêtre PyQt6 avec drag & drop, parsing du fichier, affichage d'une courbe gyro basique.
-5. Itérer.
-
-> Note : l'exploration du firmware n'a **pas** été faite sur la machine Liam. Elle est à lancer depuis la machine principale (DESKTOP-QCBKGND).
