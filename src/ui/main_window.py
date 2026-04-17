@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (
 )
 
 from parser.blackbox_parser import BlackboxParser
-from ui.plot_widget import GyroPlotWidget, PidPlotWidget
+from ui.plot_widget import GyroPlotWidget, MotorPlotWidget, PidPlotWidget
 
 SUPPORTED_EXTS = {'.bbl', '.bfl'}
 AXIS_NAMES = ['Roll', 'Pitch', 'Yaw']
@@ -171,6 +171,9 @@ class MainWindow(QMainWindow):
             field = f'axisP[{i}]'
             if field in df.columns:
                 inner.addTab(PidPlotWidget(df, i, axis_name), f"PID {axis_name}")
+
+        if 'motor[0]' in df.columns:
+            inner.addTab(MotorPlotWidget(df), "Moteurs")
 
         layout.addWidget(inner)
         return widget

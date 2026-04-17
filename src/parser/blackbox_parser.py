@@ -1,3 +1,4 @@
+import re
 import shutil
 import subprocess
 import tempfile
@@ -5,15 +6,31 @@ from pathlib import Path
 
 import pandas as pd
 
+# Champs voulus — noms APRÈS normalisation (_strip_unit enlève les suffixes d'unité).
+# 'time (us)' devient 'time', 'gyroADC[0] (deg/s)' devient 'gyroADC[0]', etc.
 WANTED_FIELDS = [
-    'time (us)',
+    'time',
     'gyroADC[0]', 'gyroADC[1]', 'gyroADC[2]',
+    'gyroUnfilt[0]', 'gyroUnfilt[1]', 'gyroUnfilt[2]',
     'rcCommand[0]', 'rcCommand[1]', 'rcCommand[2]', 'rcCommand[3]',
+    'setpoint[0]', 'setpoint[1]', 'setpoint[2]',
     'axisP[0]', 'axisP[1]', 'axisP[2]',
     'axisI[0]', 'axisI[1]', 'axisI[2]',
     'axisD[0]', 'axisD[1]', 'axisD[2]',
+    'axisF[0]', 'axisF[1]', 'axisF[2]',
     'motor[0]', 'motor[1]', 'motor[2]', 'motor[3]',
+    'eRPM[0]', 'eRPM[1]', 'eRPM[2]', 'eRPM[3]',
+    'vbatLatest', 'amperageLatest',
 ]
+
+MIN_ROWS = 50  # sessions avec moins de points = vides/corrompues, ignorées
+
+_UNIT_RE = re.compile(r'\s*\([^)]+\)$')
+
+
+def _strip_unit(name: str) -> str:
+    """'gyroADC[0] (deg/s)' → 'gyroADC[0]'"""
+    return _UNIT_RE.sub('', name).strip()
 
 
 def find_decoder() -> Path | None:
@@ -34,12 +51,12 @@ class BlackboxParser:
         return self.decoder is not None and Path(self.decoder).exists()
 
     def decode(self, bbl_path: str | Path) -> list[pd.DataFrame]:
-        """Décode un fichier .bbl/.bfl et retourne une DataFrame par session."""
+        """Décode un fichier .bbl/.bfl et retourne une DataFrame par session valide."""
         if not self.is_ready():
             raise FileNotFoundError(
                 "blackbox_decode.exe introuvable.\n"
-                "Téléchargez-le depuis https://github.com/betaflight/blackbox-tools/releases\n"
-                "et placez-le dans le dossier tools/ du projet."
+                "Placez-le dans le dossier tools/ du projet.\n"
+                "(Source : PIDtoolboxPro_v0.81_win/main/blackbox_decode.exe)"
             )
 
         bbl_path = Path(bbl_path)
@@ -49,16 +66,20 @@ class BlackboxParser:
             shutil.copy2(bbl_path, tmp_bbl)
 
             result = subprocess.run(
-                [str(self.decoder), str(tmp_bbl)],
+                [
+                    str(self.decoder),
+                    '--unit-rotation', 'deg/s',
+                    '--unit-vbat', 'V',
+                    '--unit-amperage', 'A',
+                    str(tmp_bbl),
+                ],
                 capture_output=True,
                 text=True,
                 cwd=tmpdir,
             )
 
-            if result.returncode != 0:
-                raise RuntimeError(
-                    f"Échec du décodage blackbox :\n{result.stderr or result.stdout}"
-                )
+            # returncode != 0 n'est pas toujours fatal (sessions partiellement corrompues)
+            # On lit ce qui a été généré quoi qu'il arrive
 
             csv_files = sorted(Path(tmpdir).glob(f"{bbl_path.stem}.*.csv"))
             if not csv_files:
@@ -68,9 +89,9 @@ class BlackboxParser:
             sessions = [df for df in sessions if df is not None]
 
         if not sessions:
+            detail = result.stderr or result.stdout or "pas de détail"
             raise ValueError(
-                "Aucune session de vol valide trouvée dans ce fichier.\n"
-                "Vérifiez que le fichier n'est pas corrompu."
+                f"Aucune session de vol valide trouvée dans ce fichier.\n{detail}"
             )
 
         return sessions
@@ -81,15 +102,16 @@ class BlackboxParser:
         except Exception:
             return None
 
-        df.columns = df.columns.str.strip()
+        # Normalise les noms : retire les suffixes d'unité entre parenthèses
+        df.columns = [_strip_unit(c) for c in df.columns]
 
-        if 'time (us)' not in df.columns:
+        if 'time' not in df.columns or len(df) < MIN_ROWS:
             return None
 
         keep = [c for c in WANTED_FIELDS if c in df.columns]
         df = df[keep].copy()
 
-        df['time_s'] = (df['time (us)'] - df['time (us)'].iloc[0]) / 1_000_000.0
+        df['time_s'] = (df['time'] - df['time'].iloc[0]) / 1_000_000.0
 
         for col in df.columns:
             if col != 'time_s':
