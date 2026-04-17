@@ -18,6 +18,7 @@ from analysis.analyzer import analyze
 from analysis.header_parser import FlightConfig, parse_header
 from analysis.recommender import generate_report
 from parser.blackbox_parser import BlackboxParser
+from ui.fft_widget import FftWidget
 from ui.plot_widget import GyroPlotWidget, MotorPlotWidget, PidPlotWidget
 from ui.recommendation_panel import DiagnosticWidget
 
@@ -260,6 +261,8 @@ class MainWindow(QMainWindow):
 
         if 'motor[0]' in df.columns:
             inner.addTab(MotorPlotWidget(df), "⚙ Moteurs")
+
+        inner.addTab(FftWidget(df, cfg), "📊 FFT")
 
         diag = self._build_diagnostic(df, cfg, self.size_combo.currentText())
         inner.addTab(diag, "🔍 Diagnostic")

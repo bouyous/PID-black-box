@@ -149,6 +149,9 @@ def generate_report(session: SessionAnalysis, cfg: FlightConfig,
     for aa in session.axes:
         _check_axis(aa, cfg, report, profile, max_delta, p_range, d_range)
 
+    # Vibrations mécaniques
+    _check_vibrations(session, cfg, report)
+
     # Équilibre moteurs
     imb = session.axes[0].motor_imbalance if session.axes else 0
     if imb > 80:
@@ -162,6 +165,56 @@ def generate_report(session: SessionAnalysis, cfg: FlightConfig,
         report.summary.append("Aucun problème majeur détecté. Le réglage semble équilibré.")
 
     return report
+
+
+def _check_vibrations(session: SessionAnalysis, cfg: FlightConfig,
+                      report: DiagnosticReport):
+    """Ajoute des avertissements pour les vibrations non filtrées."""
+    unfiltered_by_axis: dict[str, list] = {}
+    for aa in session.axes:
+        bad = [p for p in aa.vibration_peaks
+               if not p.covered_by_rpm_filter and p.power_db > 0]
+        if bad:
+            unfiltered_by_axis[aa.name] = bad
+
+    if not unfiltered_by_axis:
+        return
+
+    for axis_name, peaks in unfiltered_by_axis.items():
+        freqs = ', '.join(f'{p.freq_hz:.0f}Hz ({p.label})' for p in peaks[:3])
+        report.warnings.append(
+            f"Vibrations non filtrées sur {axis_name} : {freqs}. "
+            "Vérifiez les hélices, l'équilibrage moteur et le cadre."
+        )
+
+    # Recommandation spécifique selon le type de vibration
+    for aa in session.axes:
+        for p in aa.vibration_peaks:
+            if p.covered_by_rpm_filter:
+                continue
+            if p.freq_hz < 100 and p.power_db > 0:
+                # Prop wash / basse fréquence → D_min ou FF
+                ax = aa.axis
+                if ax < 2 and cfg.pid_d[ax] > 0:
+                    d_min = cfg.d_min[ax] if ax < len(cfg.d_min) else 0
+                    if d_min < cfg.pid_d[ax] * 0.8:
+                        report.recommendations.append(Recommendation(
+                            param=f"d_min_{AXIS_PARAM[ax]}",
+                            current=d_min,
+                            suggested=min(cfg.pid_d[ax], d_min + 3),
+                            severity=Severity.INFO, axis=ax,
+                            reason=f"prop wash détecté à {p.freq_hz:.0f}Hz — "
+                                   "augmenter d_min peut aider"
+                        ))
+                break  # une seule reco par axe
+
+            elif 150 < p.freq_hz < 500 and p.power_db > 0:
+                # Résonance mécanique → abaisser les filtres gyro
+                report.warnings.append(
+                    f"Résonance mécanique à {p.freq_hz:.0f}Hz ({aa.name}) — "
+                    "serrez les vis, vérifiez les anti-vibrations."
+                )
+                break
 
 
 def _check_axis(aa: AxisAnalysis, cfg: FlightConfig, report: DiagnosticReport,

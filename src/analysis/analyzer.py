@@ -27,6 +27,15 @@ MIN_FLY_SECONDS  = 2.0
 
 
 @dataclass
+class VibrationPeak:
+    freq_hz: float
+    power_db: float
+    covered_by_rpm_filter: bool   # True = déjà géré par le filtre RPM
+    harmonic: int = 0             # n-ième harmonique (0 = non RPM)
+    label: str = ""               # ex: "RPM×2" ou "Résonnance cadre"
+
+
+@dataclass
 class AxisAnalysis:
     axis: int
     name: str
@@ -39,18 +48,22 @@ class AxisAnalysis:
     has_oscillation: bool = False
 
     # --- Bruit ---
-    gyro_noise_rms: float = 0.0      # bruit résiduel sur gyro filtré (vol stable)
-    d_noise_rms: float = 0.0         # bruit sur terme D
+    gyro_noise_rms: float = 0.0
+    d_noise_rms: float = 0.0
     noise_ratio: float = 0.0         # std(brut) / std(filtré), >5 = bruyant
+
+    # --- Vibrations mécaniques ---
+    vibration_peaks: list[VibrationPeak] = field(default_factory=list)
+    has_unfiltered_vibration: bool = False
 
     # --- Suivi setpoint ---
     step_count: int = 0
     avg_rise_time_ms: float = 0.0
     avg_overshoot_pct: float = 0.0
-    avg_error_rms: float = 0.0       # erreur RMS setpoint-gyro en vol
+    avg_error_rms: float = 0.0
 
     # --- Équilibre moteurs ---
-    motor_imbalance: float = 0.0     # std des moyennes moteur (0 = parfait)
+    motor_imbalance: float = 0.0
 
 
 @dataclass
@@ -60,6 +73,8 @@ class SessionAnalysis:
     fly_duration_s: float = 0.0
     battery_voltage: float = 0.0
     cell_count: int = 0
+    avg_erpm: list[float] = field(default_factory=list)   # par moteur
+    avg_motor_hz: float = 0.0                              # fréquence fondamentale moteur
     warnings: list[str] = field(default_factory=list)
 
 
@@ -92,6 +107,17 @@ def analyze(df: pd.DataFrame, cfg: FlightConfig) -> SessionAnalysis:
 
     for axis in range(3):
         result.axes.append(_analyze_axis(df, cfg, axis, fly_mask, result.sample_rate_hz))
+
+    # Fréquence moteur moyenne (depuis eRPM)
+    result.avg_erpm = _avg_erpm(df, fly_mask)
+    if result.avg_erpm:
+        valid = [r for r in result.avg_erpm if r > 500]
+        result.avg_motor_hz = float(np.mean(valid)) / 60.0 if valid else 0.0
+
+    # Vibrations mécaniques
+    for aa in result.axes:
+        _detect_vibrations(aa, df, cfg, fly_mask, result.sample_rate_hz,
+                           result.avg_motor_hz)
 
     # Équilibre moteurs
     result.axes[0].motor_imbalance = _motor_imbalance(df, fly_mask)
@@ -293,3 +319,97 @@ def _guess_cell_count(vbat: float) -> int:
         if vbat > cells * 3.3:
             return cells
     return 0
+
+
+def _avg_erpm(df: pd.DataFrame, fly_mask: np.ndarray) -> list[float]:
+    """Retourne l'eRPM réel (×100 car BF logge erpm/100)."""
+    result = []
+    for i in range(4):
+        col = f'eRPM[{i}]'
+        if col in df.columns:
+            v = df[col].to_numpy(dtype=np.float64)[fly_mask]
+            active = v[v > 5]   # > 5 logged = > 500 eRPM réel
+            result.append(float(np.median(active)) * 100.0 if len(active) else 0.0)
+    return result
+
+
+def _detect_vibrations(aa: AxisAnalysis, df: pd.DataFrame, cfg: FlightConfig,
+                        fly_mask: np.ndarray, fs: float, avg_motor_hz: float):
+    """Détecte les pics de vibration dans le gyro brut non couverts par le filtre RPM."""
+    raw_col = f'gyroUnfilt[{aa.axis}]'
+    if raw_col not in df.columns or fs < 200 or len(aa.fft_freqs) == 0:
+        return
+
+    raw_sig = df[raw_col].to_numpy(dtype=np.float64)[fly_mask]
+    if len(raw_sig) < 512:
+        return
+
+    freqs, psd = _welch_psd(raw_sig, fs)
+    if len(freqs) == 0:
+        return
+
+    db = 10.0 * np.log10(np.clip(psd, 1e-12, None))
+
+    # Cherche les pics locaux significatifs entre 50 et 1000 Hz
+    band = (freqs >= 50) & (freqs <= 1000)
+    db_band   = db[band]
+    freq_band = freqs[band]
+
+    if len(db_band) < 10:
+        return
+
+    noise_floor = float(np.percentile(db_band, 30))
+    peak_thresh = noise_floor + 8.0   # pic > plancher + 8 dB
+
+    # Détection simple de pics locaux
+    peaks = []
+    for i in range(1, len(db_band) - 1):
+        if db_band[i] > peak_thresh and db_band[i] > db_band[i-1] and db_band[i] > db_band[i+1]:
+            peaks.append((float(freq_band[i]), float(db_band[i])))
+
+    # Fusionne les pics proches (< 20 Hz d'écart)
+    merged: list[tuple[float, float]] = []
+    for f, p in sorted(peaks):
+        if merged and f - merged[-1][0] < 20:
+            if p > merged[-1][1]:
+                merged[-1] = (f, p)
+        else:
+            merged.append((f, p))
+
+    # Fréquences couvertes par le filtre RPM
+    rpm_freqs: list[float] = []
+    if cfg.dshot_bidir and avg_motor_hz > 0:
+        for h in range(1, cfg.rpm_filter_harmonics + 2):
+            rpm_freqs.append(avg_motor_hz * h)
+
+    rpm_tol = 0.12   # ±12% pour considérer comme couvert
+
+    for f, p in merged:
+        covered = False
+        harmonic = 0
+        for h, rf in enumerate(rpm_freqs, 1):
+            if rf > 0 and abs(f - rf) / rf < rpm_tol:
+                covered = True
+                harmonic = h
+                break
+        label = f"RPM×{harmonic}" if covered else _classify_vibration(f)
+        peak = VibrationPeak(
+            freq_hz=f, power_db=p,
+            covered_by_rpm_filter=covered,
+            harmonic=harmonic, label=label
+        )
+        aa.vibration_peaks.append(peak)
+        if not covered and p > noise_floor + 12:
+            aa.has_unfiltered_vibration = True
+
+
+def _classify_vibration(freq_hz: float) -> str:
+    """Classifie une vibration non RPM par sa fréquence."""
+    if freq_hz < 80:
+        return "Prop wash / P oscill."
+    elif freq_hz < 200:
+        return "Rés. cadre probable"
+    elif freq_hz < 400:
+        return "Rés. hélice probable"
+    else:
+        return "Bruit haute fréquence"
