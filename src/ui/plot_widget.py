@@ -1,46 +1,89 @@
+"""
+Widgets de visualisation — inspirés de Blackbox Explorer.
+Principe : chaque signal dans sa propre lane, axes X synchronisés.
+"""
 import numpy as np
 import pandas as pd
 import pyqtgraph as pg
-from PyQt6.QtWidgets import QCheckBox, QHBoxLayout, QLabel, QVBoxLayout, QWidget
+from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import (
+    QCheckBox,
+    QHBoxLayout,
+    QLabel,
+    QScrollArea,
+    QSplitter,
+    QVBoxLayout,
+    QWidget,
+)
 
-pg.setConfigOption('background', '#1e1e1e')
-pg.setConfigOption('foreground', '#aaaaaa')
+pg.setConfigOption('background', '#1a1a1a')
+pg.setConfigOption('foreground', '#cccccc')
 
-# Au-delà de ce seuil, on sous-échantillonne pour la fluidité
-MAX_DISPLAY_POINTS = 200_000
+MAX_DISPLAY_POINTS = 150_000
+
+ROLL_COLOR  = '#e74c3c'
+PITCH_COLOR = '#2ecc71'
+YAW_COLOR   = '#3498db'
+AXIS_COLORS = [ROLL_COLOR, PITCH_COLOR, YAW_COLOR]
+AXIS_NAMES  = ['Roll', 'Pitch', 'Yaw']
+
+MOTOR_COLORS = ['#e74c3c', '#2ecc71', '#3498db', '#f39c12']
 
 
-def _downsample(t: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Sous-échantillonnage simple par décimation si trop de points."""
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _decimate(t: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     n = len(t)
     if n <= MAX_DISPLAY_POINTS:
         return t, y
-    step = n // MAX_DISPLAY_POINTS
+    step = max(1, n // MAX_DISPLAY_POINTS)
     return t[::step], y[::step]
 
 
-def _make_plot() -> pg.PlotWidget:
+def _lane(title: str, unit: str, color: str, height: int = 160) -> pg.PlotWidget:
+    """Crée une 'lane' style Blackbox Explorer."""
     p = pg.PlotWidget()
-    p.showGrid(x=True, y=True, alpha=0.2)
-    p.addLegend(offset=(10, 10))
+    p.setFixedHeight(height)
+    p.setLabel('left', title, units=unit, color=color)
+    p.getAxis('left').setWidth(70)
+    p.showGrid(x=True, y=True, alpha=0.15)
+    p.getPlotItem().setContentsMargins(0, 0, 0, 0)
+    p.setMenuEnabled(False)
     return p
 
 
-# ---------------------------------------------------------------------------
-# Gyroscope
-# ---------------------------------------------------------------------------
+def _link_x(plots: list[pg.PlotWidget]):
+    """Synchronise l'axe X de toutes les lanes."""
+    for p in plots[1:]:
+        p.setXLink(plots[0])
+    for p in plots[:-1]:
+        p.getAxis('bottom').setStyle(showValues=False)
+    plots[-1].setLabel('bottom', 'Temps (s)')
 
-GYRO_AXES = [
-    ('Roll',  'gyroADC[0]', '#e74c3c'),
-    ('Pitch', 'gyroADC[1]', '#2ecc71'),
-    ('Yaw',   'gyroADC[2]', '#3498db'),
-]
-GYRO_UNFILT_AXES = [
-    ('Roll brut',  'gyroUnfilt[0]', '#e74c3c'),
-    ('Pitch brut', 'gyroUnfilt[1]', '#2ecc71'),
-    ('Yaw brut',   'gyroUnfilt[2]', '#3498db'),
-]
 
+def _toggle_bar(*items: tuple[str, str, bool]) -> tuple[QWidget, dict[str, QCheckBox]]:
+    """Barre de cases à cocher. items = (label, color, checked)."""
+    bar = QWidget()
+    bar.setFixedHeight(30)
+    layout = QHBoxLayout(bar)
+    layout.setContentsMargins(4, 2, 4, 2)
+    layout.setSpacing(12)
+    checks = {}
+    for label, color, checked in items:
+        cb = QCheckBox(label)
+        cb.setChecked(checked)
+        cb.setStyleSheet(f"color: {color}; font-size: 12px;")
+        layout.addWidget(cb)
+        checks[label] = cb
+    layout.addStretch()
+    return bar, checks
+
+
+# ---------------------------------------------------------------------------
+# Widget gyroscope — 2 lanes séparées (filtré / brut)
+# ---------------------------------------------------------------------------
 
 class GyroPlotWidget(QWidget):
     def __init__(self, df: pd.DataFrame):
@@ -52,56 +95,79 @@ class GyroPlotWidget(QWidget):
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
 
-        toggle_bar = QHBoxLayout()
-        self.checks: dict[str, QCheckBox] = {}
+        # Barre d'options
+        bar, self.checks = _toggle_bar(
+            ('Roll',       ROLL_COLOR,  True),
+            ('Pitch',      PITCH_COLOR, True),
+            ('Yaw',        YAW_COLOR,   True),
+            ('Brut Roll',  ROLL_COLOR,  False),
+            ('Brut Pitch', PITCH_COLOR, False),
+            ('Brut Yaw',   YAW_COLOR,   False),
+        )
+        for label in ('Brut Roll', 'Brut Pitch', 'Brut Yaw'):
+            self.checks[label].setStyleSheet(
+                self.checks[label].styleSheet() + ' font-style: italic;'
+            )
+        layout.addWidget(bar)
 
-        for label, _, color in GYRO_AXES:
-            cb = QCheckBox(label)
-            cb.setChecked(True)
-            cb.setStyleSheet(f"color: {color}; font-weight: bold;")
-            cb.stateChanged.connect(self._update_visibility)
-            toggle_bar.addWidget(cb)
-            self.checks[label] = cb
+        # Lane gyro filtré
+        self.lane_filt = _lane('Gyro filtré', 'deg/s', '#aaa', height=200)
+        layout.addWidget(self.lane_filt)
 
-        # Gyro non filtré en option (tirets)
-        for label, _, color in GYRO_UNFILT_AXES:
-            cb = QCheckBox(label)
-            cb.setChecked(False)
-            cb.setStyleSheet(f"color: {color};")
-            cb.stateChanged.connect(self._update_visibility)
-            toggle_bar.addWidget(cb)
-            self.checks[label] = cb
+        # Lane gyro brut (masquée par défaut)
+        self.lane_raw = _lane('Gyro brut', 'deg/s', '#888', height=160)
+        self.lane_raw.setVisible(False)
+        layout.addWidget(self.lane_raw)
 
-        toggle_bar.addStretch()
-        layout.addLayout(toggle_bar)
+        _link_x([self.lane_filt, self.lane_raw])
 
-        self.plot = _make_plot()
-        self.plot.setLabel('left', 'Gyro (deg/s)')
-        self.plot.setLabel('bottom', 'Temps (s)')
-        layout.addWidget(self.plot)
+        for label in ('Brut Roll', 'Brut Pitch', 'Brut Yaw'):
+            self.checks[label].stateChanged.connect(self._on_raw_toggle)
+        for label in ('Roll', 'Pitch', 'Yaw'):
+            self.checks[label].stateChanged.connect(self._update_visibility)
 
     def _plot(self):
         t = self.df['time_s'].to_numpy(dtype=np.float64)
 
-        for label, field, color in GYRO_AXES:
-            if field not in self.df.columns:
-                continue
-            y = self.df[field].to_numpy(dtype=np.float64)
-            td, yd = _downsample(t, y)
-            curve = self.plot.plot(td, yd, pen=pg.mkPen(color, width=1), name=label)
-            self.curves[label] = curve
+        filt_pairs = [
+            ('Roll',  'gyroADC[0]', ROLL_COLOR),
+            ('Pitch', 'gyroADC[1]', PITCH_COLOR),
+            ('Yaw',   'gyroADC[2]', YAW_COLOR),
+        ]
+        raw_pairs = [
+            ('Brut Roll',  'gyroUnfilt[0]', ROLL_COLOR),
+            ('Brut Pitch', 'gyroUnfilt[1]', PITCH_COLOR),
+            ('Brut Yaw',   'gyroUnfilt[2]', YAW_COLOR),
+        ]
 
-        for label, field, color in GYRO_UNFILT_AXES:
+        for label, field, color in filt_pairs:
             if field not in self.df.columns:
                 continue
             y = self.df[field].to_numpy(dtype=np.float64)
-            td, yd = _downsample(t, y)
-            pen = pg.mkPen(color, width=1, style=pg.QtCore.Qt.PenStyle.DashLine)
-            curve = self.plot.plot(td, yd, pen=pen, name=label)
-            curve.setVisible(False)
-            self.curves[label] = curve
+            td, yd = _decimate(t, y)
+            c = self.lane_filt.plot(td, yd, pen=pg.mkPen(color, width=1), name=label)
+            self.curves[label] = c
+
+        for label, field, color in raw_pairs:
+            if field not in self.df.columns:
+                continue
+            y = self.df[field].to_numpy(dtype=np.float64)
+            td, yd = _decimate(t, y)
+            pen = pg.mkPen(color, width=1, style=Qt.PenStyle.DashLine)
+            c = self.lane_raw.plot(td, yd, pen=pen, name=label)
+            c.setVisible(self.checks[label].isChecked())
+            self.curves[label] = c
+
+    def _on_raw_toggle(self):
+        any_raw = any(
+            self.checks[l].isChecked()
+            for l in ('Brut Roll', 'Brut Pitch', 'Brut Yaw')
+        )
+        self.lane_raw.setVisible(any_raw)
+        self._update_visibility()
 
     def _update_visibility(self):
         for label, cb in self.checks.items():
@@ -110,82 +176,111 @@ class GyroPlotWidget(QWidget):
 
 
 # ---------------------------------------------------------------------------
-# PID (P, I, D, F pour un axe)
+# Widget PID — une lane par terme (P / I / D / F)
 # ---------------------------------------------------------------------------
 
-class PidPlotWidget(QWidget):
-    TERMS = [
-        ('P', '#f39c12'),
-        ('I', '#9b59b6'),
-        ('D', '#1abc9c'),
-        ('F', '#e67e22'),
-    ]
+TERM_COLORS = {'P': '#f39c12', 'I': '#9b59b6', 'D': '#1abc9c', 'F': '#e67e22'}
+TERM_UNITS  = {'P': '', 'I': '', 'D': '', 'F': ''}
 
+
+class PidPlotWidget(QWidget):
     def __init__(self, df: pd.DataFrame, axis_index: int, axis_name: str):
         super().__init__()
         self.df = df
         self.axis_index = axis_index
         self.axis_name = axis_name
+        self.lanes: dict[str, pg.PlotWidget] = {}
         self.curves: dict[str, pg.PlotDataItem] = {}
         self._build_ui()
         self._plot()
 
     def _build_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(4, 4, 4, 4)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(scroll.Shape.NoFrame)
 
-        toggle_bar = QHBoxLayout()
-        self.checks: dict[str, QCheckBox] = {}
-        for term, color in self.TERMS:
-            field = f'axis{term}[{self.axis_index}]'
-            if field not in self.df.columns:
-                continue
-            cb = QCheckBox(term)
-            cb.setChecked(True)
-            cb.setStyleSheet(f"color: {color}; font-weight: bold;")
-            cb.stateChanged.connect(self._update_visibility)
-            toggle_bar.addWidget(cb)
-            self.checks[term] = cb
+        inner = QWidget()
+        self.inner_layout = QVBoxLayout(inner)
+        self.inner_layout.setContentsMargins(0, 0, 0, 0)
+        self.inner_layout.setSpacing(0)
 
-        # Setpoint en pointillés
-        sp_field = f'setpoint[{self.axis_index}]'
+        i = self.axis_index
+        toggle_items = []
+        available_terms = []
+
+        for term in ('P', 'I', 'D', 'F'):
+            field = f'axis{term}[{i}]'
+            if field in self.df.columns:
+                available_terms.append(term)
+                toggle_items.append((term, TERM_COLORS[term], True))
+
+        # Setpoint
+        sp_field = f'setpoint[{i}]'
         if sp_field in self.df.columns:
-            cb = QCheckBox('Setpoint')
-            cb.setChecked(False)
-            cb.setStyleSheet("color: #ffffff;")
-            cb.stateChanged.connect(self._update_visibility)
-            toggle_bar.addWidget(cb)
-            self.checks['Setpoint'] = cb
+            toggle_items.append(('Setpoint', '#ffffff', False))
 
-        toggle_bar.addStretch()
-        layout.addLayout(toggle_bar)
+        bar, self.checks = _toggle_bar(*toggle_items)
+        self.inner_layout.addWidget(bar)
 
-        self.plot = _make_plot()
-        self.plot.setLabel('left', f'PID {self.axis_name}')
-        self.plot.setLabel('bottom', 'Temps (s)')
-        layout.addWidget(self.plot)
+        # Une lane par terme
+        all_lanes = []
+        for term in available_terms:
+            lane = _lane(f'{term} {self.axis_name}', '', TERM_COLORS[term], height=150)
+            self.lanes[term] = lane
+            self.inner_layout.addWidget(lane)
+            all_lanes.append(lane)
+
+        # Lane setpoint + gyro (superposés sur la même lane)
+        if sp_field in self.df.columns or f'gyroADC[{i}]' in self.df.columns:
+            lane_resp = _lane(f'Setpoint vs Gyro {self.axis_name}', 'deg/s', '#aaa', height=160)
+            self.lanes['response'] = lane_resp
+            self.inner_layout.addWidget(lane_resp)
+            all_lanes.append(lane_resp)
+
+        if all_lanes:
+            _link_x(all_lanes)
+
+        scroll.setWidget(inner)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(scroll)
 
     def _plot(self):
         t = self.df['time_s'].to_numpy(dtype=np.float64)
         i = self.axis_index
 
-        for term, color in self.TERMS:
+        for term, lane in self.lanes.items():
+            if term == 'response':
+                continue
             field = f'axis{term}[{i}]'
             if field not in self.df.columns:
                 continue
             y = self.df[field].to_numpy(dtype=np.float64)
-            td, yd = _downsample(t, y)
-            curve = self.plot.plot(td, yd, pen=pg.mkPen(color, width=1), name=term)
-            self.curves[term] = curve
+            td, yd = _decimate(t, y)
+            c = lane.plot(td, yd, pen=pg.mkPen(TERM_COLORS[term], width=1), name=term)
+            self.curves[term] = c
 
-        sp_field = f'setpoint[{i}]'
-        if sp_field in self.df.columns:
-            y = self.df[sp_field].to_numpy(dtype=np.float64)
-            td, yd = _downsample(t, y)
-            pen = pg.mkPen('#ffffff', width=1, style=pg.QtCore.Qt.PenStyle.DashLine)
-            curve = self.plot.plot(td, yd, pen=pen, name='Setpoint')
-            curve.setVisible(False)
-            self.curves['Setpoint'] = curve
+        # Lane setpoint vs gyro
+        if 'response' in self.lanes:
+            lane = self.lanes['response']
+            sp_field = f'setpoint[{i}]'
+            gy_field = f'gyroADC[{i}]'
+            if sp_field in self.df.columns:
+                y = self.df[sp_field].to_numpy(dtype=np.float64)
+                td, yd = _decimate(t, y)
+                c = lane.plot(td, yd, pen=pg.mkPen('#ffffff', width=1), name='Setpoint')
+                c.setVisible(self.checks.get('Setpoint', QCheckBox()).isChecked())
+                self.curves['Setpoint'] = c
+            if gy_field in self.df.columns:
+                color = AXIS_COLORS[i]
+                y = self.df[gy_field].to_numpy(dtype=np.float64)
+                td, yd = _decimate(t, y)
+                c = lane.plot(td, yd, pen=pg.mkPen(color, width=1, alpha=180), name='Gyro')
+                self.curves['Gyro'] = c
+
+        for label, cb in self.checks.items():
+            cb.stateChanged.connect(self._update_visibility)
 
     def _update_visibility(self):
         for label, cb in self.checks.items():
@@ -194,11 +289,8 @@ class PidPlotWidget(QWidget):
 
 
 # ---------------------------------------------------------------------------
-# Moteurs
+# Widget moteurs
 # ---------------------------------------------------------------------------
-
-MOTOR_COLORS = ['#e74c3c', '#2ecc71', '#3498db', '#f39c12']
-
 
 class MotorPlotWidget(QWidget):
     def __init__(self, df: pd.DataFrame):
@@ -210,63 +302,48 @@ class MotorPlotWidget(QWidget):
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
 
-        toggle_bar = QHBoxLayout()
-        self.checks: dict[str, QCheckBox] = {}
-
+        items = []
         for i, color in enumerate(MOTOR_COLORS):
-            for prefix, suffix in [('M', 'motor'), ('RPM', 'eRPM')]:
-                label = f'{prefix}{i + 1}'
-                field = f'{suffix}[{i}]'
-                if field not in self.df.columns:
-                    continue
-                cb = QCheckBox(label)
-                cb.setChecked(prefix == 'M')
-                cb.setStyleSheet(f"color: {color}; {'font-weight: bold;' if prefix == 'M' else ''}")
-                cb.stateChanged.connect(self._update_visibility)
-                toggle_bar.addWidget(cb)
-                self.checks[label] = cb
+            if f'motor[{i}]' in self.df.columns:
+                items.append((f'M{i+1}', color, True))
+        for i, color in enumerate(MOTOR_COLORS):
+            if f'eRPM[{i}]' in self.df.columns:
+                items.append((f'RPM{i+1}', color, False))
 
-        toggle_bar.addStretch()
-        layout.addLayout(toggle_bar)
+        bar, self.checks = _toggle_bar(*items)
+        layout.addWidget(bar)
 
-        self.plot_motor = _make_plot()
-        self.plot_motor.setLabel('left', 'Moteur (DSHOT)')
-        self.plot_motor.setLabel('bottom', 'Temps (s)')
-
-        self.plot_rpm = _make_plot()
-        self.plot_rpm.setLabel('left', 'eRPM')
-        self.plot_rpm.setLabel('bottom', 'Temps (s)')
-        self.plot_rpm.setXLink(self.plot_motor)
-
-        layout.addWidget(QLabel("Valeurs moteur (DSHOT)"))
-        layout.addWidget(self.plot_motor, stretch=1)
-        layout.addWidget(QLabel("RPM électronique"))
-        layout.addWidget(self.plot_rpm, stretch=1)
+        self.lane_motor = _lane('Moteurs (DSHOT)', '', '#aaa', height=200)
+        self.lane_rpm = _lane('eRPM', '', '#aaa', height=180)
+        layout.addWidget(self.lane_motor)
+        layout.addWidget(self.lane_rpm)
+        _link_x([self.lane_motor, self.lane_rpm])
 
     def _plot(self):
         t = self.df['time_s'].to_numpy(dtype=np.float64)
-
         for i, color in enumerate(MOTOR_COLORS):
-            field_m = f'motor[{i}]'
-            field_r = f'eRPM[{i}]'
-            label_m = f'M{i + 1}'
-            label_r = f'RPM{i + 1}'
+            for prefix, lane, field_tpl in [
+                ('M',   self.lane_motor, f'motor[{i}]'),
+                ('RPM', self.lane_rpm,   f'eRPM[{i}]'),
+            ]:
+                label = f'{prefix}{i+1}'
+                if field_tpl not in self.df.columns:
+                    continue
+                y = self.df[field_tpl].to_numpy(dtype=np.float64)
+                td, yd = _decimate(t, y)
+                pen = pg.mkPen(color, width=1,
+                               style=(Qt.PenStyle.DashLine if prefix == 'RPM'
+                                      else Qt.PenStyle.SolidLine))
+                c = lane.plot(td, yd, pen=pen, name=label)
+                if prefix == 'RPM':
+                    c.setVisible(False)
+                self.curves[label] = c
 
-            if field_m in self.df.columns:
-                y = self.df[field_m].to_numpy(dtype=np.float64)
-                td, yd = _downsample(t, y)
-                c = self.plot_motor.plot(td, yd, pen=pg.mkPen(color, width=1), name=label_m)
-                self.curves[label_m] = c
-
-            if field_r in self.df.columns:
-                y = self.df[field_r].to_numpy(dtype=np.float64)
-                td, yd = _downsample(t, y)
-                pen = pg.mkPen(color, width=1, style=pg.QtCore.Qt.PenStyle.DashLine)
-                c = self.plot_rpm.plot(td, yd, pen=pen, name=label_r)
-                c.setVisible(False)
-                self.curves[label_r] = c
+        for label, cb in self.checks.items():
+            cb.stateChanged.connect(self._update_visibility)
 
     def _update_visibility(self):
         for label, cb in self.checks.items():
