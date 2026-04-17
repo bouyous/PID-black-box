@@ -7,104 +7,131 @@ Ce fichier sert à reprendre le projet d'une machine à l'autre. Il consolide le
 ## Décisions validées
 
 ### Plateforme (17/04/2026)
-**Windows desktop avec PyQt6.**
-- Raison : cohérent avec l'environnement VoixClaire déjà en place (Python 3.11.9 + PyQt6 dispos).
-- Alternative écartée : application web locale (ajoute une complexité backend/frontend inutile).
-- Alternative écartée : CLI + rapport HTML (moins convivial pour un usage "drag & drop fichier").
+**Windows desktop avec PyQt6.** Python 3.14, pyqtgraph, pandas, numpy.
+- Mac compatible plus tard avec la même codebase (PyQt6 = cross-platform).
+- Distribution finale : PyInstaller → `.exe` standalone (pas de signature requise, la communauté FPV est habituée).
 
-### Niveau d'automatisation (17/04/2026)
-**Afficher un diff lisible + explications en français.**
-- L'utilisateur applique les changements lui-même dans Betaflight Configurator.
-- Raison : sécurité (pas de risque de bricker le drone) et pédagogique.
-- Alternative écartée (v1) : génération automatique de CLI dump Betaflight — à considérer en v2.
-- Alternative écartée : écriture directe via MSP — trop risqué, hors scope.
+### Parser blackbox (17/04/2026)
+**subprocess + `blackbox_decode.exe`** (outil officiel Betaflight, même approche que Plasmatree).
+- Source locale : `PIDtoolboxPro_v0.81_win/main/blackbox_decode.exe` (déjà copié dans `tools/`).
+- Appel avec `--unit-rotation deg/s --unit-vbat V --unit-amperage A`.
+- eRPM loggé = eRPM_réel / 100 → multiplier ×100 pour retrouver la vraie valeur.
 
-### Scope v1 (17/04/2026)
-**Lire + décoder + visualiser le blackbox.**
-- v2 = FFT + alertes mécaniques (vibrations, moteur HS, frame desserrée).
-- v3 = recommandations PID/filtres avec explication en français.
+### Plotting (17/04/2026)
+**pyqtgraph** — natif PyQt6, rapide pour 1M+ points. matplotlib pour exports PDF si besoin en v3.
 
-### Firmware cible (17/04/2026)
-**Betaflight 4.5 et plus récent.** Quadcopter uniquement (4 moteurs).
-
-### Q1 — Parser blackbox : subprocess + blackbox_decode.exe ✅ TRANCHÉ (17/04/2026)
-**Option A retenue : subprocess vers `blackbox_decode.exe`.**
-- Outil officiel Betaflight, même approche que Plasmatree PID-Analyzer.
-- L'exécutable va dans `tools/blackbox_decode.exe` (exclu du git).
-- Téléchargement : https://github.com/betaflight/blackbox-tools/releases
-- Raison du choix : fiabilité, support de tous les cas edge, pas de maintenance parser.
-
-### Q2 — Bibliothèque de plotting : pyqtgraph ✅ TRANCHÉ (17/04/2026)
-**pyqtgraph retenu.**
-- Intégration native PyQt6, performances supérieures pour données denses (50–8000 Hz).
-- matplotlib envisageable en v3 pour export de rapports statiques.
-
-### Q3 — Fichiers blackbox de test (17/04/2026)
-- Dossier `samples/` local, exclu du git (.gitignore).
-- À récupérer sur le drone réel (MAMBA F722 2022B).
+### Sécurité recommandations (17/04/2026)
+- Limites de changement calibrées par taille : 3"=±45%, 5"=±25%, 6"=±35%, 7"=±45%, 10"=±55%.
+- CLI dump en lecture seule — l'utilisateur applique manuellement dans BF Configurator.
+- **Jamais d'écriture directe sur le drone.**
 
 ---
 
-## État d'avancement
+## État du code (commit ea772ce — 17/04/2026)
 
-### v1 — Prototype fonctionnel (17/04/2026) ✅
-
-Structure de code posée :
 ```
 src/
-├── main.py                  ← point d'entrée
-├── parser/
-│   └── blackbox_parser.py   ← subprocess + CSV parsing
+├── main.py
+├── parser/blackbox_parser.py      ← subprocess + CSV, filtre sessions vides
+├── analysis/
+│   ├── header_parser.py           ← parse tous les H fields du BBL (PIDs, filtres, bidir DSHOT...)
+│   ├── analyzer.py                ← FFT Welch, oscillations, bruit D, vibrations mécaniques
+│   └── recommender.py             ← recommandations par axe, CLI dump sécurisé
 └── ui/
-    ├── main_window.py       ← fenêtre drag & drop
-    └── plot_widget.py       ← GyroPlotWidget + PidPlotWidget (pyqtgraph)
+    ├── main_window.py             ← drag & drop, sélecteur profil drone, onglets sessions
+    ├── plot_widget.py             ← lanes séparées filtré/brut, PID par terme, moteurs
+    ├── fft_widget.py              ← spectre PSD + spectrogramme Roll, marqueurs filtres RPM
+    └── recommendation_panel.py   ← onglets Contexte / Diagnostic / CLI Dump
 tools/
-└── README.md                ← instructions pour blackbox_decode.exe
-docs/
-└── research/
-    └── blackbox_format.md   ← notes format + décisions techniques
+└── blackbox_decode.exe            ← présent localement, exclu du git
+samples/
+├── BTFL_TMOTORVELOXF7SE.BBL       ← 7" 6S TMOTOR, 1 session 105s
+└── 6pouceTMOTORVELOXF7SE.BBL     ← 6", 3 sessions
 ```
 
-**Pour tester :** il faut `blackbox_decode.exe` dans `tools/` et un vrai fichier `.bbl`/`.bfl`.
+Pour lancer : `python src/main.py`
+
+---
+
+## Contexte terrain — profils de vol à intégrer (v3)
+
+### "Bangers" / vol en intérieur exigu (17/04/2026)
+**Terme américain : "bangers"** (ou "bandeau" en français FPV) = vol dans bâtiments abandonnés,
+passages très étroits (fenêtres, barres métalliques, plafonds bas). Crash quasi-garantis.
+
+**Problème identifié** : un tune très strict (fort D, filtre serré) est catastrophique en bangers.
+Quand une pale est légèrement faussée après un crash :
+- Le PID corrige en permanence la vibration → corrections énormes
+- Les moteurs chauffent, risque de griller un moteur ou un ESC
+- Impossible de ramener le drone
+
+**Profil "Loquet" (v3)** — tune tolérant pour vol en intérieur risqué :
+- Feed-forward élevé pour la réactivité
+- Filtres D moins agressifs (laisser passer un peu de bruit)
+- D_min plus bas (moins de correction sur les micro-vibrations)
+- Objectif : le drone reste pilotable même avec une pale abîmée, sans brûler les moteurs
+- **Paradoxe** : on tolère volontairement plus de bruit pour avoir moins de chaleur moteur
+
+**À implémenter en v3** : ajouter "Style de vol" dans le profil drone :
+- Freestyle / Long Range / Racing → tune standard
+- Bangers / Intérieur → profil "Loquet" (recommandations différentes, seuils plus lâches)
+
+### Altitude (17/04/2026)
+**Le pilote vole à 1200m d'altitude** — différence de tune par rapport au niveau de la mer
+est significative (densité de l'air, efficacité des hélices, réponse moteur).
+
+**À implémenter en v3** :
+- Le BBL contient les données GPS (altitude GPS dans les frames G).
+- Lire l'altitude GPS moyenne → si > 800m, afficher une alerte :
+  "Vous volez en altitude — les recommandations sont calibrées pour le niveau de la mer.
+   Votre drone peut nécessiter des PIDs différents (P légèrement plus haut, D plus bas)."
+- Éventuellement : correction automatique des seuils de recommandation selon l'altitude.
 
 ---
 
 ## Prochaines étapes
 
-1. **Récupérer un fichier blackbox** depuis le drone MAMBA F722 2022B (SD card).
-2. **Télécharger `blackbox_decode.exe`** depuis https://github.com/betaflight/blackbox-tools/releases et le placer dans `tools/`.
-3. **Tester le prototype** : `python src/main.py`, glisser le fichier, vérifier les courbes gyro.
-4. **v1 complète** : corriger les bugs éventuels, affiner l'UX (zoom, sélection de plage de temps).
-5. **v2** : FFT sur gyro pour détecter vibrations, alertes mécaniques.
+### v2 (en cours)
+- [x] FFT spectre PSD avec marqueurs filtres
+- [x] Spectrogramme Roll
+- [x] Détection vibrations mécaniques (peaks non couverts par RPM filter)
+- [ ] Affiner les seuils de recommandations sur plusieurs vols réels
+- [ ] Step-response graph zoomable (setpoint vs gyro, lecture intuitive)
+- [ ] Améliorer fly_mask (exclusion des décollages/atterrissages)
+
+### v3
+- [ ] Profil "Style de vol" : Freestyle / Racing / Long Range / Bangers
+- [ ] Lecture altitude GPS depuis frames G du BBL → alerte haute altitude
+- [ ] CLI dump complet (toutes les valeurs, pas juste les modifiées)
+- [ ] Affichage PID avant/après côte à côte
+- [ ] Export PDF du rapport de diagnostic
+
+### Distribution
+- [ ] PyInstaller → `.exe` Windows standalone (~120 Mo)
+- [ ] Test sur machine Liam (DESKTOP-8CA9R8L, Python 3.11.9)
+- [ ] Mac : tester avec la même codebase PyQt6
 
 ---
 
 ## Environnements
 
 ### Machine principale — Papa (DESKTOP-QCBKGND)
-- Développement principal. Python 3.11+ à confirmer.
-- Pour installer les dépendances : `pip install -r requirements.txt`
+- Python 3.14, PyQt6, pyqtgraph, pandas, numpy installés.
+- `blackbox_decode.exe` dans `tools/`.
 
 ### Machine secondaire — Liam (DESKTOP-8CA9R8L)
 - Windows 10, Python 3.11.9 (via VoixClaire : `C:\Users\liam0\AppData\Local\VoixClaire\python\python.exe`).
-- Git 2.53.0 installé. PyQt6 déjà présent.
+- PyQt6 déjà présent. À tester.
 
 ---
 
-## Reprendre le projet sur l'autre machine
+## Reprendre le projet
 
 ```bash
-# 1. Cloner
 git clone https://github.com/bouyous/PID-black-box.git blackbox-analyzer
 cd blackbox-analyzer
-
-# 2. Lire README.md puis ce fichier
-
-# 3. Installer les dépendances
 pip install -r requirements.txt
-
-# 4. Placer blackbox_decode.exe dans tools/  (voir tools/README.md)
-
-# 5. Lancer
+# Copier blackbox_decode.exe dans tools/
+# (source : PIDtoolboxPro_v0.81_win/PIDtoolboxPro_v0.81_win/main/blackbox_decode.exe)
 python src/main.py
 ```
