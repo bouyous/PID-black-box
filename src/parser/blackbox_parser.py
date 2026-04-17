@@ -1,6 +1,7 @@
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -34,11 +35,24 @@ def _strip_unit(name: str) -> str:
 
 
 def find_decoder() -> Path | None:
-    """Cherche blackbox_decode.exe dans tools/ puis dans le PATH."""
-    tools_dir = Path(__file__).resolve().parent.parent.parent / 'tools'
-    local = tools_dir / 'blackbox_decode.exe'
-    if local.exists():
-        return local
+    """Cherche blackbox_decode.exe : bundle PyInstaller, tools/ du repo, puis PATH."""
+    candidates = []
+    # 1. Bundle PyInstaller (--onefile extrait dans sys._MEIPASS)
+    meipass = getattr(sys, '_MEIPASS', None)
+    if meipass:
+        candidates.append(Path(meipass) / 'tools' / 'blackbox_decode.exe')
+        candidates.append(Path(meipass) / 'blackbox_decode.exe')
+    # 2. À côté de l'exe (si onedir ou si placé manuellement à côté)
+    exe_dir = Path(sys.executable).resolve().parent
+    candidates.append(exe_dir / 'tools' / 'blackbox_decode.exe')
+    candidates.append(exe_dir / 'blackbox_decode.exe')
+    # 3. Repo dev : tools/ à la racine
+    candidates.append(Path(__file__).resolve().parent.parent.parent / 'tools' / 'blackbox_decode.exe')
+
+    for c in candidates:
+        if c.exists():
+            return c
+
     found = shutil.which('blackbox_decode') or shutil.which('blackbox_decode.exe')
     return Path(found) if found else None
 

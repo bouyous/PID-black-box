@@ -484,7 +484,38 @@ def _check_axis(aa: AxisAnalysis, cfg: FlightConfig, report: DiagnosticReport,
                             f"— P un peu trop haut")
                 ))
 
-    # ===== 7. Valeurs hors plages (avertissement seul) =====
+    # ===== 7. FF trop haut (overshoot + lag faible = drone "sursauteur") =====
+    if (aa.avg_overshoot_pct > style['overshoot_target'] * 1.3
+            and aa.tracking_lag_ms < style['lag_target_ms'] * 0.6
+            and aa.step_count >= 2
+            and f_cur > f_range[0] * 1.2):
+        reduction = 0.08
+        f_new = _clamp_change(f_cur, -reduction, max_delta, f_range)
+        if f_new < f_cur:
+            report.recommendations.append(Recommendation(
+                param=f"f_{AXIS_PARAM[ax]}", current=f_cur, suggested=f_new,
+                severity=Severity.INFO, axis=ax,
+                reason=(f"overshoot {aa.avg_overshoot_pct:.0f}% avec lag faible "
+                        f"({aa.tracking_lag_ms:.0f}ms) — FF trop anticipatif")
+            ))
+
+    # ===== 8. I trop haut (overshoot sans drift et P OK) =====
+    if (aa.avg_overshoot_pct > style['overshoot_critical']
+            and aa.step_count >= 3
+            and aa.drift_score < style['drift_target'] * 0.7
+            and not aa.has_oscillation
+            and i_cur > i_range[0] * 1.3):
+        reduction = 0.08
+        i_new = _clamp_change(i_cur, -reduction, max_delta, i_range)
+        if i_new < i_cur:
+            report.recommendations.append(Recommendation(
+                param=f"i_{AXIS_PARAM[ax]}", current=i_cur, suggested=i_new,
+                severity=Severity.INFO, axis=ax,
+                reason=(f"overshoot {aa.avg_overshoot_pct:.0f}% sans drift "
+                        f"— I peut être trop agressif")
+            ))
+
+    # ===== 9. Valeurs hors plages (avertissement seul) =====
     if p_cur > 0 and not (p_range[0] <= p_cur <= p_range[1]):
         direction = "trop haut" if p_cur > p_range[1] else "trop bas"
         report.warnings.append(
@@ -528,6 +559,23 @@ def _check_filters_global(session: SessionAnalysis, cfg: FlightConfig,
             report.filter_recommendations.append(
                 f"set dterm_lpf1_dyn_max_hz = {new}    "
                 f"# était {cur} — peu de bruit HF, plus de bande passante possible"
+            )
+
+    # Gyro LPF : si bruit raw très élevé → filtre gyro trop ouvert
+    noise_ratios = [aa.noise_ratio for aa in session.axes[:2] if aa.noise_ratio > 0]
+    if noise_ratios:
+        max_noise = max(noise_ratios)
+        if max_noise > style['noise_critical'] * 1.5 and cfg.gyro_lpf1_hz > 200:
+            new_gyro = max(150, int(cfg.gyro_lpf1_hz * 0.85))
+            report.filter_recommendations.append(
+                f"set gyro_lpf1_static_hz = {new_gyro}    "
+                f"# était {cfg.gyro_lpf1_hz} — bruit gyro brut très élevé ({max_noise:.1f}x)"
+            )
+        elif max_noise < style['noise_target'] * 0.5 and 0 < cfg.gyro_lpf1_hz < 400:
+            new_gyro = min(500, int(cfg.gyro_lpf1_hz * 1.15))
+            report.filter_recommendations.append(
+                f"set gyro_lpf1_static_hz = {new_gyro}    "
+                f"# était {cfg.gyro_lpf1_hz} — très peu de bruit gyro, plus de réactivité possible"
             )
 
 
