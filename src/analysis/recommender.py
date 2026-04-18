@@ -120,12 +120,13 @@ class DiagnosticReport:
         return "\n".join(lines)
 
     def cli_dump_sliders(self) -> str:
-        """Dump alternatif utilisant les sliders Simplified Tune BF 4.5."""
+        """Dump alternatif : sliders pour PID, filtres gardés en raw."""
         if self._cfg is None:
             return "# Mode sliders indisponible : config firmware non chargée."
         adj = compute_sliders(self.recommendations, self._cfg, self.filter_recommendations)
         return dump_sliders_cli(adj, self._cfg, self.health_score,
-                                self.drone_size, self.flying_style)
+                                self.drone_size, self.flying_style,
+                                self.filter_recommendations)
 
 
 # ---------------------------------------------------------------------------

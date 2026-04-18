@@ -318,7 +318,7 @@ def _build_reco_list_raw(report: DiagnosticReport) -> QWidget:
 
 
 def _build_reco_list_sliders(report: DiagnosticReport) -> QWidget:
-    """Construit la vue 'Sliders BF 4.5'."""
+    """Vue Sliders : PID en sliders (0.00-2.00), filtres en raw."""
     inner = QWidget()
     layout = QVBoxLayout(inner)
     layout.setContentsMargins(10, 10, 10, 10)
@@ -333,61 +333,69 @@ def _build_reco_list_sliders(report: DiagnosticReport) -> QWidget:
 
     adj = compute_sliders(report.recommendations, cfg, report.filter_recommendations)
 
-    # --- Filtres sliders ---
-    filter_rows = []
-    if adj.dterm_filter_mult != cfg.simplified_dterm_filter_mult:
-        d = adj.dterm_filter_mult - cfg.simplified_dterm_filter_mult
-        filter_rows.append((
-            f"dterm_filter_multiplier : {cfg.simplified_dterm_filter_mult} → {adj.dterm_filter_mult}",
-            f"{d:+d} points — cutoff D-term ({'plus serré' if d < 0 else 'plus ouvert'})"
-        ))
-    if adj.gyro_filter_mult != cfg.simplified_gyro_filter_mult:
-        d = adj.gyro_filter_mult - cfg.simplified_gyro_filter_mult
-        filter_rows.append((
-            f"gyro_filter_multiplier : {cfg.simplified_gyro_filter_mult} → {adj.gyro_filter_mult}",
-            f"{d:+d} points — cutoff gyro ({'plus serré' if d < 0 else 'plus ouvert'})"
-        ))
+    # ===== FILTRES (identiques au mode brut — toujours en raw) =====
+    filter_cards: list[tuple[str, str]] = []
+    current_note = ''
+    for line in report.filter_recommendations:
+        cmd, note = _parse_filter_line(line)
+        if not cmd:
+            current_note = note
+            continue
+        filter_cards.append((cmd, note or current_note))
+        current_note = ''
 
-    if filter_rows:
+    if filter_cards:
         layout.addWidget(_label(
-            f"🎛  Filtres (sliders) — {len(filter_rows)} réglage(s)",
+            f"🎛  Filtres (valeurs brutes) — {len(filter_cards)}",
             bold=True, color='#3498db', size=13))
-        for title, det in filter_rows:
-            layout.addWidget(GenericCard(title, det, Severity.INFO))
+        for cmd, note in filter_cards:
+            layout.addWidget(GenericCard(cmd, note, Severity.INFO))
         layout.addWidget(_separator())
     else:
-        layout.addWidget(_label("🎛  Filtres (sliders) : OK.",
+        layout.addWidget(_label("🎛  Filtres : OK.",
                                 bold=True, color='#27ae60', size=12))
         layout.addWidget(_separator())
 
-    # --- PID sliders ---
+    # ===== PID (sliders 0.00-2.00) =====
+    # Note : activer simplified_pids_mode écrase les PIDs bruts du firmware.
+    layout.addWidget(_label(
+        "⚠️  Activer les sliders remplace les valeurs PID brutes par celles "
+        "calculées depuis les sliders. Sauvegardez votre diff Betaflight avant.",
+        color='#f39c12', size=10))
+
     slider_rows = []
-    def _row(label, cur, new, why):
+    def _row(label, cur, new, cli_name):
         if new != cur:
-            slider_rows.append((
-                f"{label} : {cur} → {new}",
-                f"{new - cur:+d} points — {why}"
-            ))
-    _row('master_multiplier', cfg.simplified_master or 100,
-         adj.master_multiplier, "gain global P/I/D/FF")
-    _row('pi_gain', cfg.simplified_pi_gain, adj.pi_gain, "P et I ensemble")
-    _row('i_gain', cfg.simplified_i_gain, adj.i_gain, "I seul (au-dessus de pi_gain)")
-    _row('d_gain', cfg.simplified_d_gain, adj.d_gain, "D")
-    _row('dmax_gain', cfg.simplified_dmax_gain, adj.dmax_gain,
-         "écart D_max/D_min (bas = plus anti-prop-wash)")
-    _row('feedforward_gain', cfg.simplified_feedforward,
-         adj.feedforward_gain, "feed-forward")
-    _row('pitch_pi_gain', cfg.simplified_pitch_pi_gain,
-         adj.pitch_pi_gain, "ratio pitch vs roll")
+            slider_rows.append((label, cur, new, cli_name))
+
+    _row('Multiplicateur Maître', cfg.simplified_master or 100,
+         adj.master_multiplier, 'simplified_master_multiplier')
+    _row('Suivi (Gains P & I)', cfg.simplified_pi_gain, adj.pi_gain,
+         'simplified_pi_gain')
+    _row('Dérive - Oscillations (Gains I)', cfg.simplified_i_gain,
+         adj.i_gain, 'simplified_i_gain')
+    _row('Atténuation (D Gains)', cfg.simplified_d_gain, adj.d_gain,
+         'simplified_d_gain')
+    _row('Atténuation dynamique (D Max)', cfg.simplified_dmax_gain,
+         adj.dmax_gain, 'simplified_dmax_gain')
+    _row('Réponse des sticks (Gains FF)', cfg.simplified_feedforward,
+         adj.feedforward_gain, 'simplified_feedforward_gain')
+    _row('Suivi du Pitch (Pitch:Roll P,I,FF)', cfg.simplified_pitch_pi_gain,
+         adj.pitch_pi_gain, 'simplified_pitch_pi_gain')
 
     if slider_rows:
         layout.addWidget(_label(
-            f"⚙  PID (sliders) — {len(slider_rows)} ajustement(s)",
+            f"⚙  Sliders PID — {len(slider_rows)} ajustement(s)",
             bold=True, color='#e0e0e0', size=13))
-        for title, det in slider_rows:
+        for label, cur, new, _ in slider_rows:
+            f_cur = cur / 100.0
+            f_new = new / 100.0
+            direction = "↓" if new < cur else "↑"
+            title = f"{label} : {f_cur:.2f}  {direction}  {f_new:.2f}"
+            det = f"Déplacez le curseur Betaflight à {f_new:.2f} (valeur CLI : {new})"
             layout.addWidget(GenericCard(title, det, Severity.INFO))
     else:
-        layout.addWidget(_label("⚙  PID (sliders) : OK.",
+        layout.addWidget(_label("⚙  Sliders PID : OK, aucun déplacement.",
                                 bold=True, color='#27ae60', size=12))
 
     if adj.notes:
@@ -442,48 +450,128 @@ class RecommendationsTab(QWidget):
 # ---------------------------------------------------------------------------
 
 class CliDumpTab(QWidget):
+    """Deux pages : avertissement/procédure → 'J'ai compris' → dump copiable."""
+
     def __init__(self, report: DiagnosticReport):
         super().__init__()
         self.report = report
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(4)
+        from PyQt6.QtWidgets import QStackedWidget
+        self.stack = QStackedWidget()
 
-        # --- En-tête explicatif (pas copié avec le texte) ---
-        layout.addWidget(_label(
-            "Copiez le bloc ci-dessous dans l'onglet CLI du Configurator Betaflight.",
-            bold=True, color='#e0e0e0', size=11
+        self.stack.addWidget(self._build_gate_page())
+        self.stack.addWidget(self._build_dump_page())
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(self.stack)
+
+    # -- Page 1 : avertissement, gros texte --
+    def _build_gate_page(self) -> QWidget:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(30, 30, 30, 30)
+        lay.setSpacing(14)
+
+        lay.addWidget(_label(
+            f"Profil : {self.report.drone_size}   •   "
+            f"Style : {self.report.flying_style}   •   "
+            f"Score : {self.report.health_score}/100",
+            bold=True, color='#e0e0e0', size=14
         ))
-        layout.addWidget(_label(
-            f"Profil : {report.drone_size}  |  Style : {report.flying_style}  |  "
-            f"Score : {report.health_score}/100",
-            color='#aaa', size=10
-        ))
-        layout.addWidget(_label(
-            "⚠️  Sécurité — procédure obligatoire : volez 30s, posez, touchez les moteurs. "
-            "Si un moteur est > 10°C au-dessus de l'ambiant, STOP, cherchez la cause physique. "
+
+        # Bloc sécurité, grand et visible
+        from PyQt6.QtWidgets import QFrame
+        box = QFrame()
+        box.setStyleSheet(
+            "QFrame { background:#2e2410; border-left:4px solid #f39c12;"
+            " border-radius:6px; padding:12px; }"
+        )
+        box_lay = QVBoxLayout(box)
+        box_lay.setSpacing(8)
+        box_lay.addWidget(_label("⚠️  PROCÉDURE DE SÉCURITÉ OBLIGATOIRE",
+                                  bold=True, color='#f39c12', size=16))
+        box_lay.addWidget(_label(
+            "1.  Sauvegardez votre diff Betaflight avant toute modification.",
+            color='#ffd479', size=13))
+        box_lay.addWidget(_label(
+            "2.  Volez 30 secondes en douceur après chaque changement.",
+            color='#ffd479', size=13))
+        box_lay.addWidget(_label(
+            "3.  Posez le drone et touchez les moteurs à la main.",
+            color='#ffd479', size=13))
+        box_lay.addWidget(_label(
+            "4.  Si un moteur est > 10 °C au-dessus de l'ambiant : STOP. "
+            "Cherchez la cause physique (hélice abîmée, roulement mort, "
+            "vis desserrée) avant d'aller plus loin.",
+            color='#ffd479', size=13))
+        box_lay.addWidget(_label(
+            "5.  Moteurs tièdes ? Volez plus longtemps et refaites une black box "
+            "pour affiner le tune.",
+            color='#ffd479', size=13))
+        lay.addWidget(box)
+
+        lay.addWidget(_label(
             "Le créateur n'est pas responsable en cas de dommage matériel.",
-            color='#f39c12', size=10
-        ))
+            color='#bbb', size=11))
 
-        # Toggle mode brut / sliders
-        from PyQt6.QtWidgets import QRadioButton, QHBoxLayout, QButtonGroup
-        mode_row = QHBoxLayout()
-        mode_row.addWidget(_label("Mode : ", color='#ccc', size=11))
+        n_pid = sum(1 for r in self.report.recommendations
+                    if r.suggested != r.current)
+        n_flt = len([l for l in self.report.filter_recommendations
+                     if l.strip() and not l.strip().startswith('#')])
+        lay.addWidget(_label(
+            f"Prêt à appliquer : {n_flt} commande(s) filtre + "
+            f"{n_pid} ajustement(s) PID.",
+            color='#e0e0e0', size=13))
+
+        lay.addStretch()
+
+        btn = QPushButton("✓  J'ai compris — afficher les commandes CLI")
+        btn.setStyleSheet(
+            "QPushButton { background:#2d5a3d; color:#fff; border:1px solid #3e7a55;"
+            " padding:12px 20px; border-radius:6px; font-size:14px; font-weight:bold; }"
+            "QPushButton:hover { background:#3a7050; }"
+        )
+        btn.clicked.connect(lambda: self.stack.setCurrentIndex(1))
+        lay.addWidget(btn, alignment=Qt.AlignmentFlag.AlignCenter)
+        return w
+
+    # -- Page 2 : dump copiable --
+    def _build_dump_page(self) -> QWidget:
+        from PyQt6.QtWidgets import QRadioButton, QButtonGroup
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(8, 8, 8, 8)
+        lay.setSpacing(4)
+
+        top = QHBoxLayout()
+        back = QPushButton("← Retour à la procédure")
+        back.setStyleSheet(
+            "QPushButton { background:#2d2d2d; color:#ccc; border:1px solid #555;"
+            " padding:4px 10px; border-radius:4px; }"
+            "QPushButton:hover { background:#3a3a3a; }"
+        )
+        back.clicked.connect(lambda: self.stack.setCurrentIndex(0))
+        top.addWidget(back)
+
+        top.addWidget(_label("Mode :", color='#ccc', size=11))
         self.rb_raw = QRadioButton("Valeurs brutes")
-        self.rb_slider = QRadioButton("Sliders BF 4.5")
+        self.rb_slider = QRadioButton("Sliders PID")
         self.rb_raw.setChecked(True)
         self.rb_raw.setStyleSheet("color:#ddd;")
         self.rb_slider.setStyleSheet("color:#ddd;")
-        grp = QButtonGroup(self)
+        grp = QButtonGroup(w)
         grp.addButton(self.rb_raw)
         grp.addButton(self.rb_slider)
         self.rb_raw.toggled.connect(self._refresh)
         self.rb_slider.toggled.connect(self._refresh)
-        mode_row.addWidget(self.rb_raw)
-        mode_row.addWidget(self.rb_slider)
-        mode_row.addStretch()
-        layout.addLayout(mode_row)
+        top.addWidget(self.rb_raw)
+        top.addWidget(self.rb_slider)
+        top.addStretch()
+        lay.addLayout(top)
+
+        lay.addWidget(_label(
+            "Copiez ce bloc dans l'onglet CLI du Configurator, puis tapez 'save'.",
+            color='#aaa', size=10))
 
         self.text_edit = QPlainTextEdit()
         self.text_edit.setReadOnly(True)
@@ -491,7 +579,7 @@ class CliDumpTab(QWidget):
         self.text_edit.setStyleSheet(
             "background: #111; color: #e0e0e0; border: 1px solid #333;"
         )
-        layout.addWidget(self.text_edit)
+        lay.addWidget(self.text_edit)
         self._refresh()
 
         btn = QPushButton("📋  Copier dans le presse-papiers")
@@ -501,7 +589,8 @@ class CliDumpTab(QWidget):
             "QPushButton:hover { background:#3a3a3a; }"
         )
         btn.clicked.connect(self._copy)
-        layout.addWidget(btn, alignment=Qt.AlignmentFlag.AlignRight)
+        lay.addWidget(btn, alignment=Qt.AlignmentFlag.AlignRight)
+        return w
 
     def _refresh(self):
         if self.rb_slider.isChecked():

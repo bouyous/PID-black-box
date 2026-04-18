@@ -172,30 +172,32 @@ def _extract_filter_factor(lines: list[str], keyword: str, current_hz: int) -> f
 
 
 def dump_sliders_cli(adj: SliderAdjustments, cfg: FlightConfig,
-                     health_score: int, drone_size: str, flying_style: str) -> str:
-    """Génère le dump CLI en mode sliders."""
+                     health_score: int, drone_size: str, flying_style: str,
+                     filter_reco_lines: list[str] = None) -> str:
+    """Génère le dump CLI en mode sliders PID (filtres gardés en raw)."""
+    filter_reco_lines = filter_reco_lines or []
+
     lines = [
         "# ============================================================",
-        "# BlackBox Analyzer — Recommandations (mode SLIDERS BF 4.5)",
+        "# BlackBox Analyzer — mode SLIDERS PID (filtres en raw)",
         f"# Profil : {drone_size}  |  Style : {flying_style}",
         f"# Score santé : {health_score}/100",
-        "# ",
-        "# Les sliders manipulent P/I/D/FF de façon cohérente.",
-        "# Les ratios internes du firmware sont préservés — approche",
-        "# plus sûre que la modification directe des valeurs brutes.",
-        "# ",
-        "# SÉCURITÉ — procédure obligatoire :",
-        "#   1. Volez 30s, posez, touchez les moteurs",
-        "#   2. Si > 10°C au-dessus de l'ambiant : STOP",
-        "#   3. Sinon volez plus longtemps, refaites une BBL",
-        "# Le créateur n'est pas responsable en cas de dommage matériel.",
+        "# Les sliders écrasent les PIDs bruts — c'est le comportement BF.",
+        "# Les filtres restent pilotés manuellement (plus précis).",
         "# ============================================================",
         "",
-        "# Activer le mode simplifié (RPY = roll + pitch + yaw)",
+        "# Activer les sliders PID (roll + pitch + yaw)",
         "set simplified_pids_mode = RPY",
         "",
-        "# --- Sliders PID ---",
+        "# Désactiver les sliders filtres (on gère les filtres à la main)",
+        "set simplified_dterm_filter = OFF",
+        "set simplified_gyro_filter = OFF",
+        "",
+        "# --- Sliders PID (valeur CLI = 100 × position du curseur) ---",
     ]
+
+    def _fmt(v: int) -> str:
+        return f"{v/100:.2f}"
 
     changes: list[tuple[str, int, int, str]] = []
 
@@ -204,51 +206,35 @@ def dump_sliders_cli(adj: SliderAdjustments, cfg: FlightConfig,
             changes.append((name, cur, new, why))
 
     _emit('simplified_master_multiplier', cfg.simplified_master or 100,
-          adj.master_multiplier, "gain global P/I/D/FF")
+          adj.master_multiplier, "Multiplicateur Maître")
     _emit('simplified_pi_gain', cfg.simplified_pi_gain, adj.pi_gain,
-          "P et I ensemble")
+          "Suivi (Gains P & I)")
     _emit('simplified_i_gain', cfg.simplified_i_gain, adj.i_gain,
-          "I seul (ajuste au-dessus de pi_gain)")
+          "Dérive - Oscillations (Gains I)")
     _emit('simplified_d_gain', cfg.simplified_d_gain, adj.d_gain,
-          "D")
+          "Atténuation (D Gains)")
     _emit('simplified_dmax_gain', cfg.simplified_dmax_gain, adj.dmax_gain,
-          "écart D_max / D_min (plus bas = plus de D permanent = mieux anti-prop-wash)")
+          "Atténuation dynamique (D Max)")
     _emit('simplified_feedforward_gain', cfg.simplified_feedforward,
-          adj.feedforward_gain, "feed-forward")
+          adj.feedforward_gain, "Réponse des sticks (Gains FF)")
     _emit('simplified_pitch_pi_gain', cfg.simplified_pitch_pi_gain,
-          adj.pitch_pi_gain, "ratio P/I pitch vs roll")
+          adj.pitch_pi_gain, "Suivi du Pitch (Pitch:Roll P,I,FF)")
 
     if not changes:
         lines.append("# Aucun ajustement slider nécessaire.")
     else:
         for name, cur, new, why in changes:
-            delta_pct = ((new - cur) / cur * 100) if cur else 0
-            lines.append(f"set {name} = {new}    # était {cur} ({delta_pct:+.0f}%) — {why}")
+            lines.append(
+                f"set {name} = {new}    # {_fmt(cur)} → {_fmt(new)} — {why}"
+            )
 
-    lines += ["", "# --- Sliders filtres ---"]
-    filter_changes = []
-    if adj.dterm_filter_mult != cfg.simplified_dterm_filter_mult:
-        d = ((adj.dterm_filter_mult - cfg.simplified_dterm_filter_mult) /
-             cfg.simplified_dterm_filter_mult * 100) if cfg.simplified_dterm_filter_mult else 0
-        filter_changes.append(
-            f"set simplified_dterm_filter_multiplier = {adj.dterm_filter_mult}"
-            f"    # était {cfg.simplified_dterm_filter_mult} ({d:+.0f}%) — cutoff D-term"
-        )
-    if adj.gyro_filter_mult != cfg.simplified_gyro_filter_mult:
-        d = ((adj.gyro_filter_mult - cfg.simplified_gyro_filter_mult) /
-             cfg.simplified_gyro_filter_mult * 100) if cfg.simplified_gyro_filter_mult else 0
-        filter_changes.append(
-            f"set simplified_gyro_filter_multiplier = {adj.gyro_filter_mult}"
-            f"    # était {cfg.simplified_gyro_filter_mult} ({d:+.0f}%) — cutoff gyro"
-        )
-    if filter_changes:
-        lines += filter_changes
-    else:
-        lines.append("# Filtres laissés tels quels.")
+    if filter_reco_lines:
+        lines += ["", "# --- Filtres (valeurs brutes) ---"]
+        for line in filter_reco_lines:
+            lines.append(line)
 
     if adj.notes:
-        lines.append("")
-        lines.append("# --- Notes de conversion ---")
+        lines += ["", "# --- Notes ---"]
         for n in adj.notes:
             lines.append(f"# {n}")
 
