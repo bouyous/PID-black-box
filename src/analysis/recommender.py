@@ -134,16 +134,28 @@ class DiagnosticReport:
 # ---------------------------------------------------------------------------
 
 DRONE_PROFILES = {
+    # Règle : plus la pale est grande, plus on a besoin de D et moins de P / I.
+    # Les gros drones résonnent à plus basse fréquence (moteurs tournent moins vite)
+    # → dterm_lpf_min abaissé pour 7"+.
     '3"':  dict(max_delta_pct=45, p_range=(25, 60), d_range=(18, 42),
-                i_range=(60, 180), f_range=(60, 180), d_min_ratio_floor=0.40),
+                i_range=(60, 180), f_range=(60, 180), d_min_ratio_floor=0.40,
+                dterm_lpf_min_target=90, dterm_lpf_max_target=160),
+    # 5" = référence
     '5"':  dict(max_delta_pct=25, p_range=(38, 78), d_range=(26, 56),
-                i_range=(70, 180), f_range=(80, 200), d_min_ratio_floor=0.45),
-    '6"':  dict(max_delta_pct=35, p_range=(42, 92), d_range=(28, 62),
-                i_range=(70, 180), f_range=(80, 200), d_min_ratio_floor=0.45),
-    '7"':  dict(max_delta_pct=45, p_range=(38, 88), d_range=(25, 58),
-                i_range=(70, 180), f_range=(80, 200), d_min_ratio_floor=0.40),
-    '10"': dict(max_delta_pct=55, p_range=(22, 68), d_range=(16, 48),
-                i_range=(60, 160), f_range=(60, 180), d_min_ratio_floor=0.35),
+                i_range=(70, 180), f_range=(80, 200), d_min_ratio_floor=0.45,
+                dterm_lpf_min_target=90, dterm_lpf_max_target=170),
+    # 6" : quasi identique à un 5", juste P/D un peu plus hauts selon config
+    '6"':  dict(max_delta_pct=30, p_range=(38, 82), d_range=(28, 58),
+                i_range=(70, 175), f_range=(80, 200), d_min_ratio_floor=0.45,
+                dterm_lpf_min_target=85, dterm_lpf_max_target=160),
+    # 7" : moins de P, moins de I, plus de D. Résonances basses → LPF serré bas.
+    '7"':  dict(max_delta_pct=45, p_range=(32, 70), d_range=(32, 65),
+                i_range=(60, 160), f_range=(80, 200), d_min_ratio_floor=0.50,
+                dterm_lpf_min_target=75, dterm_lpf_max_target=120),
+    # 10" : encore plus radical côté P/I bas, D haut, filtres très serrés.
+    '10"': dict(max_delta_pct=55, p_range=(22, 55), d_range=(30, 60),
+                i_range=(50, 140), f_range=(60, 180), d_min_ratio_floor=0.45,
+                dterm_lpf_min_target=60, dterm_lpf_max_target=100),
 }
 DEFAULT_PROFILE = DRONE_PROFILES['5"']
 
@@ -157,7 +169,8 @@ DEFAULT_PROFILE = DRONE_PROFILES['5"']
 STYLE_TARGETS = {
     # lag_target_ms = délai gyro vs setpoint (ce que corrige le FF).
     # rise_target_ms = temps pour atteindre 90% (limité par physique moteur).
-    # Freestyle : drone hyper loqué, FF presque à fond, suit parfaitement les sticks.
+    # Freestyle : drone hyper loqué, FF haut, D ≈ D_min (consensus moderne
+    # Blackbird NextLevel / UAV Tech : D=D_min=37, i_roll=120, P=66, dterm 127/257).
     'Freestyle': dict(
         osc_target=0.09,        osc_critical=0.20,
         drift_target=0.08,      drift_critical=0.20,
@@ -167,11 +180,12 @@ STYLE_TARGETS = {
         noise_target=2.3,       noise_critical=3.8,
         hf_noise_target=0.06,   hf_noise_critical=0.18,
         lag_target_ms=4,        lag_critical_ms=10,
-        d_min_ratio=0.70,
-        # Préférences : pousser FF agressivement, D élevé pour anti prop wash
+        d_min_ratio=0.90,        # Blackbird : D_min = D ; consensus 2024 avec RPM filter propre
         prefer_high_ff=True,
         prefer_high_d=True,
     ),
+    # Racing : presets ctzsnooze/MinChan — P/D bas (P~42, D~35), I et FF hauts,
+    # D_min/D 0.55-0.70 (headroom pour boost D en virage serré).
     'Racing': dict(
         osc_target=0.07,        osc_critical=0.16,
         drift_target=0.14,      drift_critical=0.28,
@@ -181,11 +195,12 @@ STYLE_TARGETS = {
         noise_target=3.5,       noise_critical=5.8,
         hf_noise_target=0.18,   hf_noise_critical=0.32,
         lag_target_ms=2,        lag_critical_ms=6,
-        d_min_ratio=0.75,
+        d_min_ratio=0.65,        # MinChan 0.54 / ctzsnooze 0.71 → milieu
         prefer_high_ff=True,
         prefer_high_d=False,
     ),
-    # Long Range : souple, FF minimal, insensible au vent — priorité stabilité.
+    # Long Range (UAV Tech 6-7") : master 150, pi_gain 85 (PI bas),
+    # d_gain 130 (D haut pour masse), ff_gain 115, gyro_filter_mult 40-60.
     'Long Range': dict(
         osc_target=0.10,        osc_critical=0.20,
         drift_target=0.05,      drift_critical=0.12,
@@ -195,8 +210,7 @@ STYLE_TARGETS = {
         noise_target=1.8,       noise_critical=2.8,
         hf_noise_target=0.04,   hf_noise_critical=0.12,
         lag_target_ms=18,       lag_critical_ms=35,
-        d_min_ratio=0.45,
-        # Préférences : FF bas (doux), D modéré, priorité I (tenue de trajectoire)
+        d_min_ratio=0.50,
         prefer_high_ff=False,
         prefer_high_d=False,
         prefer_high_i=True,
@@ -216,6 +230,139 @@ STYLE_TARGETS = {
     ),
 }
 DEFAULT_STYLE = STYLE_TARGETS['Freestyle']
+
+
+# ---------------------------------------------------------------------------
+# Ressenti du pilote — 4 sliders 1..5 pour capter le feel sans IA.
+# 3 = neutre (on respecte les cibles du style). 1-2 ou 4-5 = on pousse dans
+# une direction. Ces biais modifient les cibles du style AVANT analyse.
+# ---------------------------------------------------------------------------
+
+@dataclass
+class FlightFeel:
+    locked: int = 3          # 1=flottant souhaité, 5=ultra-locké demandé
+    wind_stability: int = 3  # 1=peu important, 5=doit être imperturbable au vent
+    responsiveness: int = 3  # 1=doux, 5=stick ultra vif
+    propwash_clean: int = 3  # 1=accepte prop wash, 5=doit être impeccable
+
+    @staticmethod
+    def neutral() -> 'FlightFeel':
+        return FlightFeel()
+
+    def is_neutral(self) -> bool:
+        return (self.locked == 3 and self.wind_stability == 3
+                and self.responsiveness == 3 and self.propwash_clean == 3)
+
+    def describe(self) -> list[str]:
+        """Retourne les directions non-neutres pour affichage."""
+        out = []
+        for val, neg, pos in [
+            (self.locked,          "drone plus libre",      "drone plus locké"),
+            (self.wind_stability,  "peu importe le vent",   "imperturbable au vent"),
+            (self.responsiveness,  "réponse plus douce",    "réponse plus vive"),
+            (self.propwash_clean,  "prop wash toléré",      "post-manœuvre impeccable"),
+        ]:
+            d = val - 3
+            if d > 0:
+                out.append(f"+{d}  {pos}")
+            elif d < 0:
+                out.append(f"{d}  {neg}")
+        return out
+
+
+def _apply_feel(style: dict, feel: FlightFeel) -> dict:
+    """Retourne une copie de `style` avec cibles déplacées selon le ressenti."""
+    s = dict(style)
+    if feel.is_neutral():
+        return s
+
+    # 1. Locké : plus locké = lag plus serré, FF plus agressif, D_min plus haut
+    d = feel.locked - 3
+    if d != 0:
+        s['lag_target_ms'] = max(1.0, s['lag_target_ms'] - d * 1.8)
+        s['overshoot_target'] = max(4, s['overshoot_target'] - d * 1.5)
+        s['d_min_ratio'] = max(0.25, min(1.0, s['d_min_ratio'] + d * 0.05))
+        if d > 0:
+            s['prefer_high_ff'] = True
+            s['prefer_high_d'] = True
+
+    # 2. Stabilité au vent : pousse I et resserre dérive
+    d = feel.wind_stability - 3
+    if d > 0:
+        s['drift_target']   = max(0.03, s['drift_target']   - d * 0.02)
+        s['drift_critical'] = max(0.06, s['drift_critical'] - d * 0.03)
+        s['prefer_high_i']  = True
+
+    # 3. Réactivité : resserre rise_target, tolère plus d'overshoot
+    d = feel.responsiveness - 3
+    if d != 0:
+        s['rise_target_ms']     = max(14, s['rise_target_ms']     - d * 5)
+        s['rise_critical_ms']   = max(30, s['rise_critical_ms']   - d * 8)
+        if d > 0:
+            s['overshoot_target']  = s['overshoot_target']  + 2
+            s['overshoot_critical'] = s['overshoot_critical'] + 3
+
+    # 4. Prop wash : resserre propwash + monte d_min_ratio
+    d = feel.propwash_clean - 3
+    if d != 0:
+        s['propwash_target']   = max(0.04, s['propwash_target']   - d * 0.03)
+        s['propwash_critical'] = max(0.08, s['propwash_critical'] - d * 0.04)
+        s['d_min_ratio']       = max(0.25, min(1.0, s['d_min_ratio'] + d * 0.04))
+
+    return s
+
+
+# ---------------------------------------------------------------------------
+# Ancres de sliders Simplified Tune — valeurs des presets officiels BF 4.5
+# (repo betaflight/firmware-presets). Utilisées comme référence d'affichage
+# et comme cible douce si les sliders actuels du pilote sont très différents.
+# Format : (master, pi_gain, i_gain, d_gain, dmax_gain, ff_gain, pitch_pi,
+#           dterm_mult, gyro_mult)
+# ---------------------------------------------------------------------------
+
+SLIDER_REFERENCE = {
+    # 3" Cinewhoop (UAV Tech) : filtrage max, D haut, master haut.
+    ('3"',  'Freestyle'):  dict(master=160, pi=100, i=100, d=140, dmax=100,
+                                 ff=100, pitch_pi=100, dterm_mult=120, gyro_mult=60),
+    ('3"',  'Long Range'): dict(master=150, pi=95,  i=90,  d=130, dmax=90,
+                                 ff=100, pitch_pi=100, dterm_mult=110, gyro_mult=60),
+    # 5" Freestyle : UAV Tech 575-650g / fpvian basher.
+    ('5"',  'Freestyle'):  dict(master=125, pi=110, i=105, d=100, dmax=80,
+                                 ff=135, pitch_pi=100, dterm_mult=120, gyro_mult=130),
+    ('5"',  'Racing'):     dict(master=100, pi=110, i=110, d=100, dmax=100,
+                                 ff=130, pitch_pi=100, dterm_mult=120, gyro_mult=120),
+    ('5"',  'Long Range'): dict(master=130, pi=90,  i=85,  d=115, dmax=90,
+                                 ff=110, pitch_pi=100, dterm_mult=100, gyro_mult=80),
+    ('5"',  'Bangers'):    dict(master=115, pi=100, i=100, d=100, dmax=100,
+                                 ff=120, pitch_pi=100, dterm_mult=130, gyro_mult=150),
+    # 6-7" : UAV Tech LR → master 150, PI bas, D haut, filtres serrés.
+    ('6"',  'Freestyle'):  dict(master=140, pi=100, i=95,  d=120, dmax=90,
+                                 ff=130, pitch_pi=100, dterm_mult=110, gyro_mult=100),
+    ('6"',  'Long Range'): dict(master=150, pi=85,  i=80,  d=130, dmax=90,
+                                 ff=115, pitch_pi=100, dterm_mult=100, gyro_mult=60),
+    ('6"',  'Racing'):     dict(master=110, pi=105, i=105, d=110, dmax=100,
+                                 ff=125, pitch_pi=100, dterm_mult=110, gyro_mult=100),
+    ('7"',  'Freestyle'):  dict(master=145, pi=95,  i=90,  d=130, dmax=90,
+                                 ff=125, pitch_pi=100, dterm_mult=90,  gyro_mult=70),
+    ('7"',  'Long Range'): dict(master=150, pi=85,  i=75,  d=135, dmax=85,
+                                 ff=110, pitch_pi=100, dterm_mult=80,  gyro_mult=50),
+    # 10" : extrapolé (preset UAV_tech_10in non récupéré — valeurs max de la tendance).
+    ('10"', 'Long Range'): dict(master=155, pi=80,  i=70,  d=140, dmax=80,
+                                 ff=105, pitch_pi=100, dterm_mult=70,  gyro_mult=45),
+    ('10"', 'Freestyle'):  dict(master=150, pi=90,  i=85,  d=135, dmax=85,
+                                 ff=115, pitch_pi=100, dterm_mult=75,  gyro_mult=50),
+}
+
+
+def get_slider_reference(drone_size: str, flying_style: str) -> dict | None:
+    """Retourne les valeurs slider de référence pour le combo, ou None."""
+    ref = SLIDER_REFERENCE.get((drone_size, flying_style))
+    if ref is not None:
+        return ref
+    # Fallback : même taille, style Freestyle ; puis 5" du style demandé.
+    return (SLIDER_REFERENCE.get((drone_size, 'Freestyle'))
+            or SLIDER_REFERENCE.get(('5"', flying_style))
+            or SLIDER_REFERENCE.get(('5"', 'Freestyle')))
 
 
 # ---------------------------------------------------------------------------
@@ -268,7 +415,8 @@ def compute_health_score(session: SessionAnalysis,
 def generate_report(session: SessionAnalysis, cfg: FlightConfig,
                     drone_size: str = '5"',
                     flying_style: str = 'Freestyle',
-                    battery_cells_override: int = 0) -> DiagnosticReport:
+                    battery_cells_override: int = 0,
+                    feel: FlightFeel | None = None) -> DiagnosticReport:
     report = DiagnosticReport(
         drone_size=drone_size,
         flying_style=flying_style,
@@ -278,7 +426,12 @@ def generate_report(session: SessionAnalysis, cfg: FlightConfig,
     report.warnings = list(session.warnings)
 
     profile = DRONE_PROFILES.get(drone_size, DEFAULT_PROFILE)
-    style   = STYLE_TARGETS.get(flying_style, DEFAULT_STYLE)
+    base_style = STYLE_TARGETS.get(flying_style, DEFAULT_STYLE)
+    style = _apply_feel(base_style, feel or FlightFeel.neutral())
+
+    # Trace ce que le ressenti a changé
+    if feel and not feel.is_neutral():
+        report.summary.append("Ressenti pilote : " + " · ".join(feel.describe()))
 
     # Contexte
     cells = battery_cells_override or session.cell_count
@@ -323,7 +476,7 @@ def generate_report(session: SessionAnalysis, cfg: FlightConfig,
         _check_axis(aa, cfg, report, profile, style)
 
     _check_vibrations(session, cfg, report, flying_style)
-    _check_filters_global(session, cfg, report, style)
+    _check_filters_global(session, cfg, report, style, profile)
 
     # Motor imbalance
     imb = session.axes[0].motor_imbalance if session.axes else 0
@@ -612,31 +765,54 @@ def _check_axis(aa: AxisAnalysis, cfg: FlightConfig, report: DiagnosticReport,
 # ---------------------------------------------------------------------------
 
 def _check_filters_global(session: SessionAnalysis, cfg: FlightConfig,
-                          report: DiagnosticReport, style: dict):
-    # Bruit HF moyen sur les 2 axes (yaw hors D)
+                          report: DiagnosticReport, style: dict,
+                          profile: dict = DEFAULT_PROFILE):
+    # Cibles D-term LPF par taille (gros drone = résonances basses = LPF serré bas)
+    dterm_min_target = profile.get('dterm_lpf_min_target', 90)
+    dterm_max_target = profile.get('dterm_lpf_max_target', 170)
+
+    # 1. Cible structurelle selon la taille de drone — appliquée même sans bruit anormal.
+    #    Ex : un 7" doit tourner autour de 75/120, pas 90/170.
+    cur_min = cfg.dterm_lpf1_dyn_min_hz
+    cur_max = cfg.dterm_lpf1_dyn_max_hz
+    if cur_min > 0 and abs(cur_min - dterm_min_target) > max(10, dterm_min_target * 0.12):
+        report.filter_recommendations.append(
+            f"set dterm_lpf1_dyn_min_hz = {dterm_min_target}    "
+            f"# était {cur_min} — cible taille {report.drone_size} "
+            f"(résonances moteurs plus basses sur gros props)"
+        )
+    if cur_max > 0 and abs(cur_max - dterm_max_target) > max(15, dterm_max_target * 0.12):
+        report.filter_recommendations.append(
+            f"set dterm_lpf1_dyn_max_hz = {dterm_max_target}    "
+            f"# était {cur_max} — cible taille {report.drone_size}"
+        )
+
+    # 2. Correction fine selon le bruit HF mesuré (surcharge la cible structurelle si pic).
     hf_vals = [aa.hf_noise_ratio for aa in session.axes[:2] if aa.hf_noise_ratio > 0]
     if not hf_vals:
         return
     avg_hf = sum(hf_vals) / len(hf_vals)
 
     if avg_hf > style['hf_noise_critical']:
-        # Bruit HF élevé → serrer dterm_lpf1
+        # Bruit HF élevé → serrer dterm_lpf1 en-deçà de la cible structurelle
         cur = cfg.dterm_lpf1_dyn_max_hz or cfg.dterm_lpf1_hz
-        if cur > 120:
-            new = max(100, int(cur * 0.82))
-            report.filter_recommendations.append(
-                f"set dterm_lpf1_dyn_max_hz = {new}    "
-                f"# était {cur} — bruit HF élevé ({avg_hf*100:.0f}% > {style['hf_noise_critical']*100:.0f}%)"
-            )
+        if cur > 0:
+            new = max(int(dterm_max_target * 0.85), int(cur * 0.82))
+            if new < cur:
+                report.filter_recommendations.append(
+                    f"set dterm_lpf1_dyn_max_hz = {new}    "
+                    f"# était {cur} — bruit HF élevé ({avg_hf*100:.0f}% > {style['hf_noise_critical']*100:.0f}%)"
+                )
     elif avg_hf < style['hf_noise_target'] * 0.6 and session.axes[0].avg_rise_time_ms > style['rise_target_ms']:
-        # Peu de bruit HF + réponse lente → on peut ouvrir les filtres pour gagner en réactivité
+        # Peu de bruit + réponse lente → ouvrir les filtres (sans dépasser largement la cible)
         cur = cfg.dterm_lpf1_dyn_max_hz or cfg.dterm_lpf1_hz
-        if 0 < cur < 250:
-            new = min(260, int(cur * 1.15))
-            report.filter_recommendations.append(
-                f"set dterm_lpf1_dyn_max_hz = {new}    "
-                f"# était {cur} — peu de bruit HF, plus de bande passante possible"
-            )
+        if 0 < cur < dterm_max_target * 1.1:
+            new = min(int(dterm_max_target * 1.2), int(cur * 1.15))
+            if new > cur:
+                report.filter_recommendations.append(
+                    f"set dterm_lpf1_dyn_max_hz = {new}    "
+                    f"# était {cur} — peu de bruit HF, plus de bande passante possible"
+                )
 
     # Gyro LPF : si bruit raw très élevé → filtre gyro trop ouvert
     noise_ratios = [aa.noise_ratio for aa in session.axes[:2] if aa.noise_ratio > 0]

@@ -6,10 +6,13 @@ from PyQt6.QtGui import QDragEnterEvent, QDropEvent
 from PyQt6.QtWidgets import (
     QComboBox,
     QFileDialog,
+    QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QMainWindow,
     QPushButton,
+    QSlider,
     QStatusBar,
     QTabWidget,
     QVBoxLayout,
@@ -18,7 +21,7 @@ from PyQt6.QtWidgets import (
 
 from analysis.analyzer import SessionAnalysis, analyze
 from analysis.header_parser import FlightConfig, parse_header
-from analysis.recommender import DiagnosticReport, generate_report
+from analysis.recommender import DiagnosticReport, FlightFeel, generate_report
 from parser.blackbox_parser import BlackboxParser
 from ui.comparison_widget import ComparisonWidget
 from ui.fft_widget import FftWidget
@@ -88,6 +91,89 @@ QPushButton {
 QPushButton:hover { background: #333; }
 QPushButton:disabled { color: #555; border-color: #333; }
 """
+
+
+class FeelSlidersBox(QFrame):
+    """4 sliders 1..5 pour capter le ressenti du pilote.
+    3 = neutre (respecte juste le style). S'écarter de 3 biaise les recos."""
+
+    SLIDERS = [
+        # (attr, title, left_label, right_label, tooltip)
+        ('locked',          "Ressenti locké",
+         "flou / libre", "ultra locké",
+         "Comment vous vouliez que le drone se comporte sur les sticks.\n"
+         "Plus vers 5 = FF et D poussés pour être « rivé »."),
+        ('wind_stability',  "Stabilité au vent",
+         "peu important", "imperturbable",
+         "Plus vers 5 = I plus haut, dérive traquée de plus près.\n"
+         "Utile en Long Range."),
+        ('responsiveness',  "Réactivité sticks",
+         "doux", "vif",
+         "Plus vers 5 = temps de montée plus serré (P/FF poussés).\n"
+         "Autorise un peu plus d'overshoot."),
+        ('propwash_clean',  "Propreté post-manœuvre",
+         "tolère", "impeccable",
+         "Plus vers 5 = D_min remonté, cible prop wash resserrée."),
+    ]
+
+    def __init__(self):
+        super().__init__()
+        self.setFrameShape(QFrame.Shape.StyledPanel)
+        self.setStyleSheet(
+            "FeelSlidersBox { background:#1f1f1f; border:1px solid #333; border-radius:4px; }"
+            "QLabel { color:#bbb; font-size:11px; }"
+            "QSlider::groove:horizontal { height:4px; background:#333; border-radius:2px; }"
+            "QSlider::sub-page:horizontal { background:#4a9eff; border-radius:2px; }"
+            "QSlider::handle:horizontal {"
+            " background:#4a9eff; width:12px; margin:-5px 0; border-radius:6px; }"
+        )
+        grid = QGridLayout(self)
+        grid.setContentsMargins(8, 4, 8, 4)
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(2)
+
+        title = QLabel("Ressenti en vol  (3 = neutre)")
+        title.setStyleSheet("color:#888; font-size:10px;")
+        grid.addWidget(title, 0, 0, 1, 4)
+
+        self._sliders: dict[str, QSlider] = {}
+        for row, (attr, label, lo_lbl, hi_lbl, tt) in enumerate(self.SLIDERS, start=1):
+            name = QLabel(label)
+            name.setToolTip(tt)
+            name.setFixedWidth(150)
+            grid.addWidget(name, row, 0)
+
+            lo = QLabel(lo_lbl)
+            lo.setStyleSheet("color:#666; font-size:10px;")
+            lo.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            grid.addWidget(lo, row, 1)
+
+            s = QSlider(Qt.Orientation.Horizontal)
+            s.setMinimum(1)
+            s.setMaximum(5)
+            s.setValue(3)
+            s.setFixedWidth(90)
+            s.setToolTip(tt)
+            s.setTickPosition(QSlider.TickPosition.TicksBelow)
+            s.setTickInterval(1)
+            grid.addWidget(s, row, 2)
+            self._sliders[attr] = s
+
+            hi = QLabel(hi_lbl)
+            hi.setStyleSheet("color:#666; font-size:10px;")
+            grid.addWidget(hi, row, 3)
+
+    def current_feel(self) -> FlightFeel:
+        return FlightFeel(
+            locked=self._sliders['locked'].value(),
+            wind_stability=self._sliders['wind_stability'].value(),
+            responsiveness=self._sliders['responsiveness'].value(),
+            propwash_clean=self._sliders['propwash_clean'].value(),
+        )
+
+    def reset(self):
+        for s in self._sliders.values():
+            s.setValue(3)
 
 
 class DropArea(QLabel):
@@ -209,6 +295,13 @@ class MainWindow(QMainWindow):
 
         root.addLayout(top_bar)
 
+        # --- Ressenti pilote (sliders 1-5) ---
+        feel_bar = QHBoxLayout()
+        feel_bar.setContentsMargins(0, 0, 0, 0)
+        self._feel_box = FeelSlidersBox()
+        feel_bar.addWidget(self._feel_box, stretch=1)
+        root.addLayout(feel_bar)
+
         # --- Bouton comparer ---
         cmp_bar = QHBoxLayout()
         self._btn_set_ref = QPushButton("💾  Définir comme référence")
@@ -298,11 +391,12 @@ class MainWindow(QMainWindow):
         battery = self._battery_combo.currentText()
         bat_cells = int(battery[:-1]) if battery != 'Auto' else 0
 
+        feel = self._feel_box.current_feel()
         session_analyses = []
         session_reports  = []
         for i, df in enumerate(sessions):
             sa = analyze(df, self._last_cfg)
-            rp = generate_report(sa, self._last_cfg, size, style, bat_cells)
+            rp = generate_report(sa, self._last_cfg, size, style, bat_cells, feel)
             session_analyses.append(sa)
             session_reports.append(rp)
             tab = self._build_session_tab(df, self._last_cfg, sa, rp)
@@ -363,7 +457,8 @@ class MainWindow(QMainWindow):
             sa = getattr(widget, '_sa', None)
             if sa is None:
                 continue
-            rp = generate_report(sa, self._last_cfg, size, style, bat_cells)
+            feel = self._feel_box.current_feel()
+            rp = generate_report(sa, self._last_cfg, size, style, bat_cells, feel)
             new_diag = DiagnosticWidget(self._last_cfg, rp, size)
             inner_tabs.removeTab(diag_idx)
             inner_tabs.insertTab(diag_idx, new_diag, "Diagnostic")
