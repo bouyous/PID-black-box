@@ -64,6 +64,16 @@ class FlightConfig:
     anti_gravity_gain: int = 80
     simplified_mode: int = 0
     simplified_master: int = 100
+    simplified_pi_gain: int = 100
+    simplified_i_gain: int = 100
+    simplified_d_gain: int = 100
+    simplified_dmax_gain: int = 100
+    simplified_feedforward: int = 100
+    simplified_pitch_pi_gain: int = 100
+    simplified_dterm_filter: int = 1
+    simplified_dterm_filter_mult: int = 100
+    simplified_gyro_filter: int = 1
+    simplified_gyro_filter_mult: int = 100
     debug_mode: int = 0
 
     # Dict brut pour tout le reste
@@ -184,8 +194,18 @@ def parse_header(bbl_path: str | Path) -> FlightConfig:
     cfg.tpa_breakpoint  = get_int('tpa_breakpoint', 1350)
     cfg.iterm_windup    = get_int('iterm_windup', 85)
     cfg.anti_gravity_gain = get_int('anti_gravity_gain', 80)
-    cfg.simplified_mode   = get_int('simplified_pids_mode')
-    cfg.simplified_master = get_int('simplified_master_multiplier', 100)
+    cfg.simplified_mode             = get_int('simplified_pids_mode')
+    cfg.simplified_master           = get_int('simplified_master_multiplier', 100)
+    cfg.simplified_pi_gain          = get_int('simplified_pi_gain', 100)
+    cfg.simplified_i_gain           = get_int('simplified_i_gain', 100)
+    cfg.simplified_d_gain           = get_int('simplified_d_gain', 100)
+    cfg.simplified_dmax_gain        = get_int('simplified_dmax_gain', 100)
+    cfg.simplified_feedforward      = get_int('simplified_feedforward_gain', 100)
+    cfg.simplified_pitch_pi_gain    = get_int('simplified_pitch_pi_gain', 100)
+    cfg.simplified_dterm_filter     = get_int('simplified_dterm_filter', 1)
+    cfg.simplified_dterm_filter_mult = get_int('simplified_dterm_filter_multiplier', 100)
+    cfg.simplified_gyro_filter      = get_int('simplified_gyro_filter', 1)
+    cfg.simplified_gyro_filter_mult = get_int('simplified_gyro_filter_multiplier', 100)
     cfg.debug_mode        = get_int('debug_mode')
 
     return cfg

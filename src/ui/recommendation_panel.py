@@ -276,6 +276,7 @@ class RecommendationsTab(QWidget):
 class CliDumpTab(QWidget):
     def __init__(self, report: DiagnosticReport):
         super().__init__()
+        self.report = report
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(6)
@@ -285,14 +286,33 @@ class CliDumpTab(QWidget):
             color='#aaa', size=11
         ))
 
+        # Toggle mode brut / sliders
+        from PyQt6.QtWidgets import QRadioButton, QHBoxLayout, QButtonGroup
+        mode_row = QHBoxLayout()
+        mode_row.addWidget(_label("Mode : ", color='#ccc', size=11))
+        self.rb_raw = QRadioButton("Valeurs brutes (P/I/D directs)")
+        self.rb_slider = QRadioButton("Sliders Simplified Tune (BF 4.5) — recommandé")
+        self.rb_raw.setChecked(True)
+        self.rb_raw.setStyleSheet("color:#ddd;")
+        self.rb_slider.setStyleSheet("color:#ddd;")
+        grp = QButtonGroup(self)
+        grp.addButton(self.rb_raw)
+        grp.addButton(self.rb_slider)
+        self.rb_raw.toggled.connect(self._refresh)
+        self.rb_slider.toggled.connect(self._refresh)
+        mode_row.addWidget(self.rb_raw)
+        mode_row.addWidget(self.rb_slider)
+        mode_row.addStretch()
+        layout.addLayout(mode_row)
+
         self.text_edit = QPlainTextEdit()
         self.text_edit.setReadOnly(True)
         self.text_edit.setFont(QFont("Consolas", 11))
         self.text_edit.setStyleSheet(
             "background: #111; color: #e0e0e0; border: 1px solid #333;"
         )
-        self.text_edit.setPlainText(report.cli_dump())
         layout.addWidget(self.text_edit)
+        self._refresh()
 
         btn = QPushButton("📋  Copier dans le presse-papiers")
         btn.setStyleSheet(
@@ -302,6 +322,12 @@ class CliDumpTab(QWidget):
         )
         btn.clicked.connect(self._copy)
         layout.addWidget(btn, alignment=Qt.AlignmentFlag.AlignRight)
+
+    def _refresh(self):
+        if self.rb_slider.isChecked():
+            self.text_edit.setPlainText(self.report.cli_dump_sliders())
+        else:
+            self.text_edit.setPlainText(self.report.cli_dump())
 
     def _copy(self):
         from PyQt6.QtWidgets import QApplication

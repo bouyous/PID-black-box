@@ -15,6 +15,7 @@ from enum import Enum
 
 from analysis.analyzer import AxisAnalysis, SessionAnalysis
 from analysis.header_parser import FlightConfig
+from analysis.sliders import compute_sliders, dump_sliders_cli
 
 
 class Severity(str, Enum):
@@ -75,6 +76,7 @@ class DiagnosticReport:
     flying_style: str                      = "Freestyle"
     battery_cells_override: int            = 0
     health_score: int                      = 100
+    _cfg: FlightConfig | None              = None
 
     def has_issues(self) -> bool:
         return any(r.severity in (Severity.WARNING, Severity.CRITICAL)
@@ -116,6 +118,14 @@ class DiagnosticReport:
 
         lines += ["", "save"]
         return "\n".join(lines)
+
+    def cli_dump_sliders(self) -> str:
+        """Dump alternatif utilisant les sliders Simplified Tune BF 4.5."""
+        if self._cfg is None:
+            return "# Mode sliders indisponible : config firmware non chargée."
+        adj = compute_sliders(self.recommendations, self._cfg, self.filter_recommendations)
+        return dump_sliders_cli(adj, self._cfg, self.health_score,
+                                self.drone_size, self.flying_style)
 
 
 # ---------------------------------------------------------------------------
@@ -249,6 +259,7 @@ def generate_report(session: SessionAnalysis, cfg: FlightConfig,
         drone_size=drone_size,
         flying_style=flying_style,
         battery_cells_override=battery_cells_override,
+        _cfg=cfg,
     )
     report.warnings = list(session.warnings)
 
