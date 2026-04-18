@@ -21,6 +21,30 @@ from PyQt6.QtWidgets import (
 
 from analysis.header_parser import FlightConfig
 from analysis.recommender import DiagnosticReport, Recommendation, Severity, AXIS_NAME
+from analysis.sliders import compute_sliders
+
+
+def _strip_cli_comments(dump: str) -> str:
+    """Retire lignes # et commentaires inline pour un copier-coller propre."""
+    out = []
+    for line in dump.splitlines():
+        s = line.strip()
+        if not s or s.startswith('#'):
+            continue
+        if '#' in line:
+            line = line.split('#', 1)[0].rstrip()
+        out.append(line)
+    return "\n".join(out)
+
+
+def _parse_filter_line(line: str) -> tuple[str, str]:
+    """'set foo = 145    # était 170 — bruit HF' → ('set foo = 145', 'était 170 — bruit HF')"""
+    if line.strip().startswith('#'):
+        return ('', line.lstrip('# ').strip())
+    if '#' in line:
+        cmd, _, note = line.partition('#')
+        return (cmd.strip(), note.strip())
+    return (line.strip(), '')
 
 # ---------------------------------------------------------------------------
 # Couleurs par sévérité
@@ -70,22 +94,43 @@ class RecoCard(QFrame):
         self.setStyleSheet(f"""
             QFrame {{
                 background: {bg};
-                border-left: 4px solid {color};
-                border-radius: 4px;
-                padding: 8px;
-                margin: 3px 0;
+                border-left: 3px solid {color};
+                border-radius: 3px;
+                padding: 4px;
+                margin: 2px 0;
             }}
         """)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 6, 8, 6)
-        layout.setSpacing(4)
+        layout.setContentsMargins(8, 3, 8, 3)
+        layout.setSpacing(1)
 
-        # Titre : paramètre + changement
-        layout.addWidget(_label(reco.label, bold=True, color=color, size=12))
+        axis_str = f" ({AXIS_NAME[reco.axis]})" if reco.axis >= 0 else ""
+        layout.addWidget(_label(reco.label + axis_str, bold=True, color=color, size=11))
+        layout.addWidget(_label(reco.reason, color='#aaa', size=10))
 
-        axis_str = f" — axe {AXIS_NAME[reco.axis]}" if reco.axis >= 0 else ""
-        layout.addWidget(_label(f"Raison{axis_str} : {reco.reason}", size=11))
+
+class GenericCard(QFrame):
+    """Card générique pour afficher filtres / sliders."""
+    def __init__(self, title: str, detail: str, severity: Severity = Severity.INFO):
+        super().__init__()
+        color = SEV_COLOR[severity]
+        bg = SEV_BG[severity]
+        self.setStyleSheet(f"""
+            QFrame {{
+                background: {bg};
+                border-left: 3px solid {color};
+                border-radius: 3px;
+                padding: 4px;
+                margin: 2px 0;
+            }}
+        """)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 3, 8, 3)
+        layout.setSpacing(1)
+        layout.addWidget(_label(title, bold=True, color=color, size=11))
+        if detail:
+            layout.addWidget(_label(detail, color='#aaa', size=10))
 
 
 # ---------------------------------------------------------------------------
@@ -221,52 +266,175 @@ class ContextTab(QWidget):
 # Onglet Recommandations
 # ---------------------------------------------------------------------------
 
+def _build_reco_list_raw(report: DiagnosticReport) -> QWidget:
+    """Construit la vue 'Valeurs brutes' : filtres en premier, puis PIDs."""
+    inner = QWidget()
+    layout = QVBoxLayout(inner)
+    layout.setContentsMargins(10, 10, 10, 10)
+    layout.setSpacing(4)
+
+    # ===== FILTRES EN PREMIER =====
+    filter_cards: list[tuple[str, str]] = []
+    current_note = ''
+    for line in report.filter_recommendations:
+        cmd, note = _parse_filter_line(line)
+        if not cmd:
+            current_note = note
+            continue
+        filter_cards.append((cmd, note or current_note))
+        current_note = ''
+
+    if filter_cards:
+        layout.addWidget(_label(
+            f"🎛  Filtres — {len(filter_cards)} réglage(s)", bold=True,
+            color='#3498db', size=13
+        ))
+        layout.addWidget(_label(
+            "Les filtres sont la base d'un tune propre : vibrations, "
+            "bruit HF, résonances.", color='#aaa', size=10))
+        for cmd, note in filter_cards:
+            layout.addWidget(GenericCard(cmd, note, Severity.INFO))
+        layout.addWidget(_separator())
+    else:
+        layout.addWidget(_label("🎛  Filtres : OK, rien à ajuster.",
+                                bold=True, color='#27ae60', size=12))
+        layout.addWidget(_separator())
+
+    # ===== PIDS =====
+    pid_changes = [r for r in report.recommendations if r.suggested != r.current]
+    if pid_changes:
+        layout.addWidget(_label(
+            f"⚙  PID — {len(pid_changes)} ajustement(s)",
+            bold=True, color='#e0e0e0', size=13
+        ))
+        for reco in pid_changes:
+            layout.addWidget(RecoCard(reco))
+    else:
+        layout.addWidget(_label("⚙  PID : OK, aucun changement nécessaire.",
+                                bold=True, color='#27ae60', size=12))
+
+    layout.addStretch()
+    return inner
+
+
+def _build_reco_list_sliders(report: DiagnosticReport) -> QWidget:
+    """Construit la vue 'Sliders BF 4.5'."""
+    inner = QWidget()
+    layout = QVBoxLayout(inner)
+    layout.setContentsMargins(10, 10, 10, 10)
+    layout.setSpacing(4)
+
+    cfg = report._cfg
+    if cfg is None:
+        layout.addWidget(_label("Sliders indisponibles (pas de config firmware).",
+                                color='#f39c12', size=12))
+        layout.addStretch()
+        return inner
+
+    adj = compute_sliders(report.recommendations, cfg, report.filter_recommendations)
+
+    # --- Filtres sliders ---
+    filter_rows = []
+    if adj.dterm_filter_mult != cfg.simplified_dterm_filter_mult:
+        d = adj.dterm_filter_mult - cfg.simplified_dterm_filter_mult
+        filter_rows.append((
+            f"dterm_filter_multiplier : {cfg.simplified_dterm_filter_mult} → {adj.dterm_filter_mult}",
+            f"{d:+d} points — cutoff D-term ({'plus serré' if d < 0 else 'plus ouvert'})"
+        ))
+    if adj.gyro_filter_mult != cfg.simplified_gyro_filter_mult:
+        d = adj.gyro_filter_mult - cfg.simplified_gyro_filter_mult
+        filter_rows.append((
+            f"gyro_filter_multiplier : {cfg.simplified_gyro_filter_mult} → {adj.gyro_filter_mult}",
+            f"{d:+d} points — cutoff gyro ({'plus serré' if d < 0 else 'plus ouvert'})"
+        ))
+
+    if filter_rows:
+        layout.addWidget(_label(
+            f"🎛  Filtres (sliders) — {len(filter_rows)} réglage(s)",
+            bold=True, color='#3498db', size=13))
+        for title, det in filter_rows:
+            layout.addWidget(GenericCard(title, det, Severity.INFO))
+        layout.addWidget(_separator())
+    else:
+        layout.addWidget(_label("🎛  Filtres (sliders) : OK.",
+                                bold=True, color='#27ae60', size=12))
+        layout.addWidget(_separator())
+
+    # --- PID sliders ---
+    slider_rows = []
+    def _row(label, cur, new, why):
+        if new != cur:
+            slider_rows.append((
+                f"{label} : {cur} → {new}",
+                f"{new - cur:+d} points — {why}"
+            ))
+    _row('master_multiplier', cfg.simplified_master or 100,
+         adj.master_multiplier, "gain global P/I/D/FF")
+    _row('pi_gain', cfg.simplified_pi_gain, adj.pi_gain, "P et I ensemble")
+    _row('i_gain', cfg.simplified_i_gain, adj.i_gain, "I seul (au-dessus de pi_gain)")
+    _row('d_gain', cfg.simplified_d_gain, adj.d_gain, "D")
+    _row('dmax_gain', cfg.simplified_dmax_gain, adj.dmax_gain,
+         "écart D_max/D_min (bas = plus anti-prop-wash)")
+    _row('feedforward_gain', cfg.simplified_feedforward,
+         adj.feedforward_gain, "feed-forward")
+    _row('pitch_pi_gain', cfg.simplified_pitch_pi_gain,
+         adj.pitch_pi_gain, "ratio pitch vs roll")
+
+    if slider_rows:
+        layout.addWidget(_label(
+            f"⚙  PID (sliders) — {len(slider_rows)} ajustement(s)",
+            bold=True, color='#e0e0e0', size=13))
+        for title, det in slider_rows:
+            layout.addWidget(GenericCard(title, det, Severity.INFO))
+    else:
+        layout.addWidget(_label("⚙  PID (sliders) : OK.",
+                                bold=True, color='#27ae60', size=12))
+
+    if adj.notes:
+        layout.addWidget(_separator())
+        layout.addWidget(_label("Notes de conversion :", color='#aaa', size=10))
+        for n in adj.notes:
+            layout.addWidget(_label(f"  • {n}", color='#888', size=10))
+
+    layout.addStretch()
+    return inner
+
+
 class RecommendationsTab(QWidget):
     def __init__(self, report: DiagnosticReport):
         super().__init__()
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-
-        inner = QWidget()
-        layout = QVBoxLayout(inner)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(6)
-
-        # Résumé
-        for line in report.summary:
-            layout.addWidget(_label(f"• {line}", color='#aaa', size=11))
-
-        if report.summary:
-            layout.addWidget(_separator())
-
-        # Avertissements globaux
-        for warn in report.warnings:
-            layout.addWidget(_label(f"⚠️  {warn}", color='#f39c12', size=11))
-
-        if report.warnings:
-            layout.addWidget(_separator())
-
-        # Recommandations
-        if not report.recommendations:
-            layout.addWidget(_label(
-                "✅  Aucune correction nécessaire détectée.",
-                bold=True, color='#27ae60', size=13
-            ))
-        else:
-            layout.addWidget(_label(
-                f"{len(report.recommendations)} correction(s) suggérée(s) :",
-                bold=True, size=13
-            ))
-            for reco in report.recommendations:
-                layout.addWidget(RecoCard(reco))
-
-        layout.addStretch()
-        scroll.setWidget(inner)
-
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
-        outer.addWidget(scroll)
+        outer.setSpacing(4)
+
+        # --- Résumé + warnings (toujours visible au-dessus) ---
+        header = QWidget()
+        hlay = QVBoxLayout(header)
+        hlay.setContentsMargins(10, 8, 10, 2)
+        hlay.setSpacing(2)
+        for line in report.summary:
+            hlay.addWidget(_label(f"• {line}", color='#aaa', size=10))
+        for warn in report.warnings:
+            hlay.addWidget(_label(f"⚠️  {warn}", color='#f39c12', size=10))
+        outer.addWidget(header)
+
+        # --- Sous-onglets Brut / Sliders ---
+        sub = QTabWidget()
+        sub.setStyleSheet("QTabBar::tab { padding: 4px 14px; }")
+
+        scroll_raw = QScrollArea()
+        scroll_raw.setWidgetResizable(True)
+        scroll_raw.setFrameShape(QFrame.Shape.NoFrame)
+        scroll_raw.setWidget(_build_reco_list_raw(report))
+        sub.addTab(scroll_raw, "Valeurs brutes")
+
+        scroll_sl = QScrollArea()
+        scroll_sl.setWidgetResizable(True)
+        scroll_sl.setFrameShape(QFrame.Shape.NoFrame)
+        scroll_sl.setWidget(_build_reco_list_sliders(report))
+        sub.addTab(scroll_sl, "Sliders BF 4.5")
+
+        outer.addWidget(sub)
 
 
 # ---------------------------------------------------------------------------
@@ -279,19 +447,31 @@ class CliDumpTab(QWidget):
         self.report = report
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(6)
+        layout.setSpacing(4)
 
+        # --- En-tête explicatif (pas copié avec le texte) ---
         layout.addWidget(_label(
-            "Copiez ce bloc dans le CLI Betaflight (onglet CLI du Configurator).",
-            color='#aaa', size=11
+            "Copiez le bloc ci-dessous dans l'onglet CLI du Configurator Betaflight.",
+            bold=True, color='#e0e0e0', size=11
+        ))
+        layout.addWidget(_label(
+            f"Profil : {report.drone_size}  |  Style : {report.flying_style}  |  "
+            f"Score : {report.health_score}/100",
+            color='#aaa', size=10
+        ))
+        layout.addWidget(_label(
+            "⚠️  Sécurité — procédure obligatoire : volez 30s, posez, touchez les moteurs. "
+            "Si un moteur est > 10°C au-dessus de l'ambiant, STOP, cherchez la cause physique. "
+            "Le créateur n'est pas responsable en cas de dommage matériel.",
+            color='#f39c12', size=10
         ))
 
         # Toggle mode brut / sliders
         from PyQt6.QtWidgets import QRadioButton, QHBoxLayout, QButtonGroup
         mode_row = QHBoxLayout()
         mode_row.addWidget(_label("Mode : ", color='#ccc', size=11))
-        self.rb_raw = QRadioButton("Valeurs brutes (P/I/D directs)")
-        self.rb_slider = QRadioButton("Sliders Simplified Tune (BF 4.5) — recommandé")
+        self.rb_raw = QRadioButton("Valeurs brutes")
+        self.rb_slider = QRadioButton("Sliders BF 4.5")
         self.rb_raw.setChecked(True)
         self.rb_raw.setStyleSheet("color:#ddd;")
         self.rb_slider.setStyleSheet("color:#ddd;")
@@ -325,9 +505,10 @@ class CliDumpTab(QWidget):
 
     def _refresh(self):
         if self.rb_slider.isChecked():
-            self.text_edit.setPlainText(self.report.cli_dump_sliders())
+            raw = self.report.cli_dump_sliders()
         else:
-            self.text_edit.setPlainText(self.report.cli_dump())
+            raw = self.report.cli_dump()
+        self.text_edit.setPlainText(_strip_cli_comments(raw))
 
     def _copy(self):
         from PyQt6.QtWidgets import QApplication
