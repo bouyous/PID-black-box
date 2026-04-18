@@ -476,7 +476,8 @@ def generate_report(session: SessionAnalysis, cfg: FlightConfig,
         _check_axis(aa, cfg, report, profile, style)
 
     _check_vibrations(session, cfg, report, flying_style)
-    _check_filters_global(session, cfg, report, style, profile)
+    _check_filters_global(session, cfg, report, style, profile, session)
+    _enforce_signature(cfg, report, style, profile, feel or FlightFeel.neutral())
 
     # Motor imbalance
     imb = session.axes[0].motor_imbalance if session.axes else 0
@@ -766,28 +767,44 @@ def _check_axis(aa: AxisAnalysis, cfg: FlightConfig, report: DiagnosticReport,
 
 def _check_filters_global(session: SessionAnalysis, cfg: FlightConfig,
                           report: DiagnosticReport, style: dict,
-                          profile: dict = DEFAULT_PROFILE):
+                          profile: dict = DEFAULT_PROFILE,
+                          session_ref: SessionAnalysis | None = None):
     # Cibles D-term LPF par taille (gros drone = résonances basses = LPF serré bas)
     dterm_min_target = profile.get('dterm_lpf_min_target', 90)
     dterm_max_target = profile.get('dterm_lpf_max_target', 170)
 
-    # 1. Cible structurelle selon la taille de drone — appliquée même sans bruit anormal.
-    #    Ex : un 7" doit tourner autour de 75/120, pas 90/170.
+    # Cible structurelle : proposée UNIQUEMENT si on a une preuve dans la
+    # blackbox (bruit mesuré OU écart franchement aberrant > 40%).
+    # Sinon on respecte le réglage du pilote — pas de preset imposé.
+    sess = session_ref or session
+    hf_for_evidence = [aa.hf_noise_ratio for aa in sess.axes[:2] if aa.hf_noise_ratio > 0]
+    noise_for_evidence = [aa.noise_ratio for aa in sess.axes[:2] if aa.noise_ratio > 0]
+    has_noise_signal = (
+        (hf_for_evidence and max(hf_for_evidence) > style['hf_noise_target'] * 0.9)
+        or (noise_for_evidence and max(noise_for_evidence) > style['noise_target'] * 0.85)
+    )
+
     cur_min = cfg.dterm_lpf1_dyn_min_hz
     cur_max = cfg.dterm_lpf1_dyn_max_hz
-    if cur_min > 0 and abs(cur_min - dterm_min_target) > max(10, dterm_min_target * 0.12):
+
+    def _is_aberrant(cur: int, target: int) -> bool:
+        return cur > 0 and target > 0 and abs(cur - target) / target > 0.40
+
+    if (has_noise_signal or _is_aberrant(cur_min, dterm_min_target)) \
+            and cur_min > 0 and abs(cur_min - dterm_min_target) > max(10, dterm_min_target * 0.15):
         report.filter_recommendations.append(
             f"set dterm_lpf1_dyn_min_hz = {dterm_min_target}    "
             f"# était {cur_min} — cible taille {report.drone_size} "
-            f"(résonances moteurs plus basses sur gros props)"
+            f"(signal de bruit ou écart aberrant détecté)"
         )
-    if cur_max > 0 and abs(cur_max - dterm_max_target) > max(15, dterm_max_target * 0.12):
+    if (has_noise_signal or _is_aberrant(cur_max, dterm_max_target)) \
+            and cur_max > 0 and abs(cur_max - dterm_max_target) > max(15, dterm_max_target * 0.15):
         report.filter_recommendations.append(
             f"set dterm_lpf1_dyn_max_hz = {dterm_max_target}    "
             f"# était {cur_max} — cible taille {report.drone_size}"
         )
 
-    # 2. Correction fine selon le bruit HF mesuré (surcharge la cible structurelle si pic).
+    # Correction fine selon le bruit HF mesuré (conditionné aux données).
     hf_vals = [aa.hf_noise_ratio for aa in session.axes[:2] if aa.hf_noise_ratio > 0]
     if not hf_vals:
         return
@@ -924,6 +941,106 @@ def _recommend_filters(peaks: list[tuple[str, float, float]],
                 f"set dyn_notch_max_hz = {max_f}",
                 f"set dyn_notch_q = 250",
             ]
+
+
+def _enforce_signature(cfg: FlightConfig, report: DiagnosticReport,
+                       style: dict, profile: dict, feel: FlightFeel):
+    """Garantit qu'un changement de style ou de ressenti produit toujours
+    au moins une proposition visible, même sur un vol propre.
+
+    Calcule une "signature PID" attendue pour (style × feel) et comble
+    l'écart avec la config actuelle sur 3 dimensions :
+      - D_min/D ratio  (drivé par style['d_min_ratio'] déjà déformé par feel)
+      - FF cible      (drivé par prefer_high_ff + locked + responsiveness)
+      - I cible       (drivé par prefer_high_i + wind_stability)
+
+    Ne touche JAMAIS un paramètre déjà recommandé par l'analyse mesurée.
+    Sévérité toujours INFO — ce sont des ajustements de style, pas des
+    corrections de défaut."""
+    p_range = profile['p_range']
+    d_range = profile['d_range']
+    i_range = profile['i_range']
+    f_range = profile['f_range']
+
+    def _already(param: str) -> bool:
+        return any(r.param == param for r in report.recommendations)
+
+    # --- 1. Signature D_min (toujours — différencie fort les styles) ---
+    target_dm_ratio = style['d_min_ratio']
+    for ax in (0, 1):
+        d = cfg.pid_d[ax]
+        dm = cfg.d_min[ax] if ax < len(cfg.d_min) else 0
+        if d <= 0:
+            continue
+        target_dm = max(8, min(d, int(round(d * target_dm_ratio))))
+        cur_ratio = (dm / d) if d > 0 else 0.0
+        param = f"d_min_{AXIS_PARAM[ax]}"
+        if _already(param) or dm == 0:
+            continue
+        # On déclenche dès 4 % d'écart OU 2 points de différence — assez
+        # bas pour qu'un cran de slider d_min_ratio (0.04-0.05) déclenche.
+        if abs(target_dm - dm) >= max(2, int(d * 0.04)):
+            report.recommendations.append(Recommendation(
+                param=param, current=dm, suggested=target_dm,
+                severity=Severity.INFO, axis=ax,
+                reason=(f"D_min/D cible {target_dm_ratio:.2f} pour "
+                        f"{report.flying_style} + ressenti (actuel {cur_ratio:.2f})")
+            ))
+
+    # --- 2. Signature FF : multiplicateur proportionnel au feel ---
+    # Chaque cran de slider bouge FF de ~3-4 % pour garantir un delta visible
+    # même sur petits PIDs, sans être aveuglé par max_delta_pct.
+    ff_high = style.get('prefer_high_ff')
+    if ff_high is True:
+        ff_mult = 1.15
+    elif ff_high is False:
+        ff_mult = 0.88
+    else:
+        ff_mult = 1.0
+    ff_mult *= 1 + (feel.locked - 3) * 0.04 + (feel.responsiveness - 3) * 0.03
+    for ax in (0, 1):
+        f = cfg.pid_f[ax] if ax < len(cfg.pid_f) else 0
+        if f <= 0:
+            continue
+        param = f"f_{AXIS_PARAM[ax]}"
+        if _already(param):
+            continue
+        ff_target = int(round(f * ff_mult))
+        ff_target = max(f_range[0], min(f_range[1], ff_target))
+        if abs(ff_target - f) >= max(3, int(f * 0.03)) and ff_target != f:
+            direction = ("FF plus haut (drone locké/vif)"
+                         if ff_target > f else "FF plus doux (stabilité)")
+            report.recommendations.append(Recommendation(
+                param=param, current=f, suggested=ff_target,
+                severity=Severity.INFO, axis=ax,
+                reason=(f"{direction} — style {report.flying_style} "
+                        f"+ ressenti (×{ff_mult:.2f})")
+            ))
+
+    # --- 3. Signature I : idem, proportionnelle au feel ---
+    i_high = style.get('prefer_high_i')
+    wind_d = feel.wind_stability - 3
+    if i_high or wind_d != 0:
+        i_mult = 1.12 if i_high else 1.0
+        i_mult *= 1 + wind_d * 0.05
+        for ax in (0, 1):
+            i = cfg.pid_i[ax]
+            if i <= 0:
+                continue
+            param = f"i_{AXIS_PARAM[ax]}"
+            if _already(param):
+                continue
+            i_target = int(round(i * i_mult))
+            i_target = max(i_range[0], min(i_range[1], i_target))
+            if abs(i_target - i) >= max(3, int(i * 0.03)) and i_target != i:
+                why = ("I plus haut (tenue de trajectoire)"
+                       if i_target > i else "I plus bas (moins rigide)")
+                report.recommendations.append(Recommendation(
+                    param=param, current=i, suggested=i_target,
+                    severity=Severity.INFO, axis=ax,
+                    reason=(f"{why} — style {report.flying_style} "
+                            f"+ stabilité vent (×{i_mult:.2f})")
+                ))
 
 
 def _clamp_change(current: int, delta_ratio: float,

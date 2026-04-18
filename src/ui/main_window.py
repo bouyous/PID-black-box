@@ -271,28 +271,6 @@ class MainWindow(QMainWindow):
             '_battery_combo'
         ))
 
-        # Bouton Appliquer sous les sélecteurs
-        apply_box = QWidget()
-        apply_lay = QVBoxLayout(apply_box)
-        apply_lay.setContentsMargins(8, 0, 0, 0)
-        apply_lay.setSpacing(4)
-        apply_lay.addWidget(QLabel(" "))  # aligne verticalement avec les combos
-        self._btn_apply = QPushButton("✓ Appliquer")
-        self._btn_apply.setToolTip(
-            "Recalcule le diagnostic avec le profil sélectionné.\n"
-            "Comparez Freestyle et Long Range pour voir la différence."
-        )
-        self._btn_apply.setStyleSheet(
-            "QPushButton { background:#2d5a3d; color:#fff; border:1px solid #3e7a55;"
-            " padding:6px 14px; border-radius:4px; font-weight:bold; }"
-            "QPushButton:hover { background:#3a7050; }"
-            "QPushButton:disabled { background:#252525; color:#555; border-color:#333; }"
-        )
-        self._btn_apply.setEnabled(False)
-        self._btn_apply.clicked.connect(self._on_profile_changed)
-        apply_lay.addWidget(self._btn_apply)
-        top_bar.addWidget(apply_box)
-
         root.addLayout(top_bar)
 
         # --- Ressenti pilote (sliders 1-5) ---
@@ -301,6 +279,29 @@ class MainWindow(QMainWindow):
         self._feel_box = FeelSlidersBox()
         feel_bar.addWidget(self._feel_box, stretch=1)
         root.addLayout(feel_bar)
+
+        # --- Bouton Appliquer (grand, pleine largeur) ---
+        self._btn_apply = QPushButton("✓  Appliquer le profil et le ressenti")
+        self._btn_apply.setToolTip(
+            "Recalcule le diagnostic en combinant :\n"
+            "  • Taille / Style / Batterie ci-dessus\n"
+            "  • Les 4 sliders de ressenti en vol\n"
+            "Chaque cran de slider ou changement de style produit "
+            "au moins un ajustement."
+        )
+        self._btn_apply.setMinimumHeight(40)
+        self._btn_apply.setStyleSheet(
+            "QPushButton { background:#2d5a3d; color:#fff;"
+            " border:1px solid #3e7a55; border-radius:4px;"
+            " padding:8px 18px; font-weight:bold; font-size:14px; }"
+            "QPushButton:hover { background:#3a7050; border-color:#5aa078; }"
+            "QPushButton:pressed { background:#245033; }"
+            "QPushButton:disabled { background:#252525; color:#555;"
+            " border-color:#333; }"
+        )
+        self._btn_apply.setEnabled(False)
+        self._btn_apply.clicked.connect(self._on_profile_changed)
+        root.addWidget(self._btn_apply)
 
         # --- Bouton comparer ---
         cmp_bar = QHBoxLayout()
