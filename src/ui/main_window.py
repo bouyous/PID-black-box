@@ -160,19 +160,21 @@ class MainWindow(QMainWindow):
         self.drop_area.file_dropped.connect(self._on_file_dropped)
         top_bar.addWidget(self.drop_area, stretch=1)
 
-        # Sélecteur taille drone
+        # Sélecteur taille drone (pas d'auto-refresh — on attend clic Appliquer)
         top_bar.addWidget(self._make_selector_box(
             "Taille drone", DRONE_SIZES, '5"',
             "3\" : ±45%\n5\" : ±25%\n6\" : ±35%\n7\" : ±45%\n10\" : ±55%",
-            '_size_combo', self._on_profile_changed
+            '_size_combo'
         ))
 
         # Sélecteur style de vol
         top_bar.addWidget(self._make_selector_box(
             "Style de vol", FLYING_STYLES, 'Freestyle',
-            "Freestyle : équilibré\nRacing : réactivité max\n"
-            "Long Range : stabilité\nBangers : tolérant (indoor, crash probable)",
-            '_style_combo', self._on_profile_changed
+            "Freestyle : drone hyper loqué, FF agressif\n"
+            "Racing : réactivité max, tracking serré\n"
+            "Long Range : souple, FF bas, insensible au vent\n"
+            "Bangers : tolérant (indoor, crash probable)",
+            '_style_combo'
         ))
 
         # Sélecteur batterie
@@ -180,8 +182,30 @@ class MainWindow(QMainWindow):
             "Batterie", BATTERY_OPTIONS, 'Auto',
             "Auto = détecté depuis la tension BBL\n"
             "Forcer si le vol de test n'était pas sur la batterie habituelle",
-            '_battery_combo', self._on_profile_changed
+            '_battery_combo'
         ))
+
+        # Bouton Appliquer sous les sélecteurs
+        apply_box = QWidget()
+        apply_lay = QVBoxLayout(apply_box)
+        apply_lay.setContentsMargins(8, 0, 0, 0)
+        apply_lay.setSpacing(4)
+        apply_lay.addWidget(QLabel(" "))  # aligne verticalement avec les combos
+        self._btn_apply = QPushButton("✓ Appliquer")
+        self._btn_apply.setToolTip(
+            "Recalcule le diagnostic avec le profil sélectionné.\n"
+            "Comparez Freestyle et Long Range pour voir la différence."
+        )
+        self._btn_apply.setStyleSheet(
+            "QPushButton { background:#2d5a3d; color:#fff; border:1px solid #3e7a55;"
+            " padding:6px 14px; border-radius:4px; font-weight:bold; }"
+            "QPushButton:hover { background:#3a7050; }"
+            "QPushButton:disabled { background:#252525; color:#555; border-color:#333; }"
+        )
+        self._btn_apply.setEnabled(False)
+        self._btn_apply.clicked.connect(self._on_profile_changed)
+        apply_lay.addWidget(self._btn_apply)
+        top_bar.addWidget(apply_box)
 
         root.addLayout(top_bar)
 
@@ -217,7 +241,7 @@ class MainWindow(QMainWindow):
         self.setStatusBar(self.status)
 
     def _make_selector_box(self, label_text, items, default, tooltip,
-                           attr_name, on_change) -> QWidget:
+                           attr_name) -> QWidget:
         box = QWidget()
         layout = QVBoxLayout(box)
         layout.setContentsMargins(8, 0, 0, 0)
@@ -227,7 +251,6 @@ class MainWindow(QMainWindow):
         combo.addItems(items)
         combo.setCurrentText(default)
         combo.setToolTip(tooltip)
-        combo.currentTextChanged.connect(on_change)
         layout.addWidget(combo)
         setattr(self, attr_name, combo)
         return box
@@ -312,6 +335,7 @@ class MainWindow(QMainWindow):
             "(glissez un autre fichier pour remplacer)"
         )
         self._btn_set_ref.setEnabled(True)
+        self._btn_apply.setEnabled(True)
 
     def _on_profile_changed(self, _=None):
         """Relance l'analyse si un fichier est déjà chargé."""
@@ -336,15 +360,18 @@ class MainWindow(QMainWindow):
                     break
             if diag_idx is None:
                 continue
-            df = widget.property('df')
-            sa = widget.property('sa')
-            if df is None or sa is None:
+            sa = getattr(widget, '_sa', None)
+            if sa is None:
                 continue
             rp = generate_report(sa, self._last_cfg, size, style, bat_cells)
             new_diag = DiagnosticWidget(self._last_cfg, rp, size)
             inner_tabs.removeTab(diag_idx)
             inner_tabs.insertTab(diag_idx, new_diag, "Diagnostic")
             inner_tabs.setCurrentIndex(diag_idx)
+        self.status.showMessage(
+            f"Profil appliqué : {size} / {style}"
+            + (f" / {battery}" if battery != 'Auto' else "")
+        )
 
     # ------------------------------------------------------------------
     # Référence pour comparaison
@@ -386,8 +413,8 @@ class MainWindow(QMainWindow):
     def _build_session_tab(self, df: pd.DataFrame, cfg: FlightConfig,
                             sa: SessionAnalysis, rp: DiagnosticReport) -> QWidget:
         widget = QWidget()
-        widget.setProperty('df', df)
-        widget.setProperty('sa', sa)
+        widget._df = df
+        widget._sa = sa
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(0, 2, 0, 0)
 

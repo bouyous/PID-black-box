@@ -408,17 +408,96 @@ def _build_reco_list_sliders(report: DiagnosticReport) -> QWidget:
     return inner
 
 
+def _build_safety_gate(on_accept) -> QWidget:
+    """Page d'avertissement avec bouton 'J'ai compris'. Partagée Diag/CLI."""
+    w = QWidget()
+    lay = QVBoxLayout(w)
+    lay.setContentsMargins(30, 30, 30, 30)
+    lay.setSpacing(14)
+
+    box = QFrame()
+    box.setStyleSheet(
+        "QFrame { background:#2e2410; border-left:4px solid #f39c12;"
+        " border-radius:6px; padding:12px; }"
+    )
+    box_lay = QVBoxLayout(box)
+    box_lay.setSpacing(8)
+    box_lay.addWidget(_label("⚠️  PROCÉDURE DE SÉCURITÉ OBLIGATOIRE",
+                              bold=True, color='#f39c12', size=16))
+    box_lay.addWidget(_label(
+        "1.  Sauvegardez votre diff Betaflight avant toute modification.",
+        color='#ffd479', size=13))
+    box_lay.addWidget(_label(
+        "2.  Volez 30 secondes en douceur après chaque changement.",
+        color='#ffd479', size=13))
+    box_lay.addWidget(_label(
+        "3.  Posez le drone et touchez les moteurs à la main.",
+        color='#ffd479', size=13))
+    box_lay.addWidget(_label(
+        "4.  Si un moteur est > 10 °C au-dessus de l'ambiant : STOP. "
+        "Cherchez la cause physique (hélice abîmée, roulement mort, "
+        "vis desserrée) avant d'aller plus loin.",
+        color='#ffd479', size=13))
+    box_lay.addWidget(_label(
+        "5.  Moteurs tièdes ? Volez plus longtemps et refaites une black box "
+        "pour affiner le tune.",
+        color='#ffd479', size=13))
+    lay.addWidget(box)
+
+    lay.addWidget(_label(
+        "Le créateur n'est pas responsable en cas de dommage matériel.",
+        color='#bbb', size=11))
+
+    lay.addStretch()
+
+    btn = QPushButton("✓  J'ai compris — afficher les recommandations")
+    btn.setStyleSheet(
+        "QPushButton { background:#2d5a3d; color:#fff; border:1px solid #3e7a55;"
+        " padding:12px 20px; border-radius:6px; font-size:14px; font-weight:bold; }"
+        "QPushButton:hover { background:#3a7050; }"
+    )
+    btn.clicked.connect(on_accept)
+    lay.addWidget(btn, alignment=Qt.AlignmentFlag.AlignCenter)
+    return w
+
+
 class RecommendationsTab(QWidget):
     def __init__(self, report: DiagnosticReport):
         super().__init__()
+        from PyQt6.QtWidgets import QStackedWidget
+        self.report = report
+        self.stack = QStackedWidget()
+        self.stack.addWidget(_build_safety_gate(
+            lambda: self.stack.setCurrentIndex(1)
+        ))
+        self.stack.addWidget(self._build_content_page(report))
+
         outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(self.stack)
+
+    def _build_content_page(self, report: DiagnosticReport) -> QWidget:
+        w = QWidget()
+        outer = QVBoxLayout(w)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(4)
 
-        # --- Résumé + warnings (toujours visible au-dessus) ---
+        # Bouton retour à la procédure
+        back_row = QHBoxLayout()
+        back = QPushButton("← Relire la procédure de sécurité")
+        back.setStyleSheet(
+            "QPushButton { background:#2d2d2d; color:#ccc; border:1px solid #555;"
+            " padding:4px 10px; border-radius:4px; }"
+            "QPushButton:hover { background:#3a3a3a; }"
+        )
+        back.clicked.connect(lambda: self.stack.setCurrentIndex(0))
+        back_row.addWidget(back)
+        back_row.addStretch()
+        outer.addLayout(back_row)
+
         header = QWidget()
         hlay = QVBoxLayout(header)
-        hlay.setContentsMargins(10, 8, 10, 2)
+        hlay.setContentsMargins(10, 4, 10, 2)
         hlay.setSpacing(2)
         for line in report.summary:
             hlay.addWidget(_label(f"• {line}", color='#aaa', size=10))
@@ -426,7 +505,6 @@ class RecommendationsTab(QWidget):
             hlay.addWidget(_label(f"⚠️  {warn}", color='#f39c12', size=10))
         outer.addWidget(header)
 
-        # --- Sous-onglets Brut / Sliders ---
         sub = QTabWidget()
         sub.setStyleSheet("QTabBar::tab { padding: 4px 14px; }")
 
@@ -440,9 +518,10 @@ class RecommendationsTab(QWidget):
         scroll_sl.setWidgetResizable(True)
         scroll_sl.setFrameShape(QFrame.Shape.NoFrame)
         scroll_sl.setWidget(_build_reco_list_sliders(report))
-        sub.addTab(scroll_sl, "Sliders BF 4.5")
+        sub.addTab(scroll_sl, "Sliders PID")
 
         outer.addWidget(sub)
+        return w
 
 
 # ---------------------------------------------------------------------------

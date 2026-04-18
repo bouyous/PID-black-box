@@ -157,49 +157,62 @@ DEFAULT_PROFILE = DRONE_PROFILES['5"']
 STYLE_TARGETS = {
     # lag_target_ms = délai gyro vs setpoint (ce que corrige le FF).
     # rise_target_ms = temps pour atteindre 90% (limité par physique moteur).
+    # Freestyle : drone hyper loqué, FF presque à fond, suit parfaitement les sticks.
     'Freestyle': dict(
-        osc_target=0.10,        osc_critical=0.22,
-        drift_target=0.10,      drift_critical=0.25,
-        propwash_target=0.10,   propwash_critical=0.22,
-        rise_target_ms=30,      rise_critical_ms=60,
-        overshoot_target=12,    overshoot_critical=25,
-        noise_target=2.5,       noise_critical=4.2,
-        hf_noise_target=0.08,   hf_noise_critical=0.20,
-        lag_target_ms=5,        lag_critical_ms=12,
-        d_min_ratio=0.65,
+        osc_target=0.09,        osc_critical=0.20,
+        drift_target=0.08,      drift_critical=0.20,
+        propwash_target=0.09,   propwash_critical=0.20,
+        rise_target_ms=26,      rise_critical_ms=50,
+        overshoot_target=10,    overshoot_critical=22,
+        noise_target=2.3,       noise_critical=3.8,
+        hf_noise_target=0.06,   hf_noise_critical=0.18,
+        lag_target_ms=4,        lag_critical_ms=10,
+        d_min_ratio=0.70,
+        # Préférences : pousser FF agressivement, D élevé pour anti prop wash
+        prefer_high_ff=True,
+        prefer_high_d=True,
     ),
     'Racing': dict(
-        osc_target=0.08,        osc_critical=0.18,
-        drift_target=0.15,      drift_critical=0.30,
-        propwash_target=0.15,   propwash_critical=0.30,
-        rise_target_ms=22,      rise_critical_ms=45,
-        overshoot_target=8,     overshoot_critical=18,
-        noise_target=3.2,       noise_critical=5.5,
-        hf_noise_target=0.15,   hf_noise_critical=0.28,
-        lag_target_ms=3,        lag_critical_ms=8,
+        osc_target=0.07,        osc_critical=0.16,
+        drift_target=0.14,      drift_critical=0.28,
+        propwash_target=0.14,   propwash_critical=0.28,
+        rise_target_ms=20,      rise_critical_ms=42,
+        overshoot_target=7,     overshoot_critical=16,
+        noise_target=3.5,       noise_critical=5.8,
+        hf_noise_target=0.18,   hf_noise_critical=0.32,
+        lag_target_ms=2,        lag_critical_ms=6,
         d_min_ratio=0.75,
+        prefer_high_ff=True,
+        prefer_high_d=False,
     ),
+    # Long Range : souple, FF minimal, insensible au vent — priorité stabilité.
     'Long Range': dict(
-        osc_target=0.08,        osc_critical=0.15,
-        drift_target=0.06,      drift_critical=0.15,
-        propwash_target=0.18,   propwash_critical=0.35,
-        rise_target_ms=55,      rise_critical_ms=100,
-        overshoot_target=18,    overshoot_critical=30,
-        noise_target=2.0,       noise_critical=3.2,
-        hf_noise_target=0.05,   hf_noise_critical=0.15,
-        lag_target_ms=10,       lag_critical_ms=25,
-        d_min_ratio=0.50,
+        osc_target=0.10,        osc_critical=0.20,
+        drift_target=0.05,      drift_critical=0.12,
+        propwash_target=0.25,   propwash_critical=0.45,
+        rise_target_ms=70,      rise_critical_ms=120,
+        overshoot_target=22,    overshoot_critical=38,
+        noise_target=1.8,       noise_critical=2.8,
+        hf_noise_target=0.04,   hf_noise_critical=0.12,
+        lag_target_ms=18,       lag_critical_ms=35,
+        d_min_ratio=0.45,
+        # Préférences : FF bas (doux), D modéré, priorité I (tenue de trajectoire)
+        prefer_high_ff=False,
+        prefer_high_d=False,
+        prefer_high_i=True,
     ),
     'Bangers': dict(
-        osc_target=0.18,        osc_critical=0.40,
-        drift_target=0.22,      drift_critical=0.45,
-        propwash_target=0.22,   propwash_critical=0.45,
-        rise_target_ms=45,      rise_critical_ms=100,
-        overshoot_target=25,    overshoot_critical=45,
-        noise_target=4.5,       noise_critical=7.5,
-        hf_noise_target=0.20,   hf_noise_critical=0.35,
-        lag_target_ms=8,        lag_critical_ms=20,
-        d_min_ratio=0.40,
+        osc_target=0.22,        osc_critical=0.45,
+        drift_target=0.28,      drift_critical=0.50,
+        propwash_target=0.28,   propwash_critical=0.50,
+        rise_target_ms=55,      rise_critical_ms=120,
+        overshoot_target=30,    overshoot_critical=50,
+        noise_target=5.0,       noise_critical=8.5,
+        hf_noise_target=0.25,   hf_noise_critical=0.40,
+        lag_target_ms=12,       lag_critical_ms=25,
+        d_min_ratio=0.35,
+        prefer_high_ff=False,
+        prefer_high_d=False,
     ),
 }
 DEFAULT_STYLE = STYLE_TARGETS['Freestyle']
@@ -526,6 +539,58 @@ def _check_axis(aa: AxisAnalysis, cfg: FlightConfig, report: DiagnosticReport,
                 reason=(f"overshoot {aa.avg_overshoot_pct:.0f}% sans drift "
                         f"— I peut être trop agressif")
             ))
+
+    # ===== 10. Biais selon le style (pousse activement dans la bonne direction) =====
+    # Freestyle/Racing : FF haut → drone "locked", suit le stick au millimètre
+    if style.get('prefer_high_ff') and f_cur > 0 and aa.step_count >= 2:
+        ff_target = int(f_range[1] * 0.85)
+        # Si FF bien sous la cible, ET pas d'overshoot excessif, pousser le FF
+        if (f_cur < ff_target and
+                aa.avg_overshoot_pct < style['overshoot_target'] * 1.2):
+            # Pas déjà suggéré ailleurs ?
+            already = any(r.param == f"f_{AXIS_PARAM[ax]}" and r.suggested != r.current
+                          for r in report.recommendations)
+            if not already:
+                boost = 0.10
+                f_new = _clamp_change(f_cur, +boost, max_delta, f_range)
+                if f_new > f_cur:
+                    report.recommendations.append(Recommendation(
+                        param=f"f_{AXIS_PARAM[ax]}", current=f_cur, suggested=f_new,
+                        severity=Severity.INFO, axis=ax,
+                        reason=(f"{report.flying_style} : drone doit être 'locked' — "
+                                f"FF peut monter (actuel {f_cur}, cible ~{ff_target})")
+                    ))
+
+    # Long Range : FF bas (souple, peu sensible au vent), I haut (tient trajectoire)
+    if style.get('prefer_high_ff') is False and f_cur > 0 and aa.step_count >= 2:
+        ff_max = int(f_range[0] * 1.3)
+        if f_cur > ff_max and aa.avg_overshoot_pct > style['overshoot_target'] * 0.8:
+            already = any(r.param == f"f_{AXIS_PARAM[ax]}" and r.suggested != r.current
+                          for r in report.recommendations)
+            if not already:
+                f_new = _clamp_change(f_cur, -0.12, max_delta, f_range)
+                if f_new < f_cur:
+                    report.recommendations.append(Recommendation(
+                        param=f"f_{AXIS_PARAM[ax]}", current=f_cur, suggested=f_new,
+                        severity=Severity.INFO, axis=ax,
+                        reason=(f"{report.flying_style} : FF doux pour stabilité — "
+                                f"moins sensible au vent et aux changements d'altitude")
+                    ))
+
+    if style.get('prefer_high_i') and i_cur > 0:
+        i_min_target = int(i_range[1] * 0.75)
+        if i_cur < i_min_target and aa.drift_score > style['drift_target'] * 0.5:
+            already = any(r.param == f"i_{AXIS_PARAM[ax]}" and r.suggested != r.current
+                          for r in report.recommendations)
+            if not already:
+                i_new = _clamp_change(i_cur, +0.10, max_delta, i_range)
+                if i_new > i_cur:
+                    report.recommendations.append(Recommendation(
+                        param=f"i_{AXIS_PARAM[ax]}", current=i_cur, suggested=i_new,
+                        severity=Severity.INFO, axis=ax,
+                        reason=(f"{report.flying_style} : I plus haut pour tenir "
+                                f"la trajectoire sur la durée")
+                    ))
 
     # ===== 9. Valeurs hors plages (avertissement seul) =====
     if p_cur > 0 and not (p_range[0] <= p_cur <= p_range[1]):
