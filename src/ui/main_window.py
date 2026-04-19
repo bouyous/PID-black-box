@@ -30,8 +30,8 @@ from ui.recommendation_panel import DiagnosticWidget
 
 SUPPORTED_EXTS = {'.bbl', '.bfl'}
 AXIS_NAMES = ['Roll', 'Pitch', 'Yaw']
-DRONE_SIZES = ['3"', '5"', '6"', '7"', '10"']
-FLYING_STYLES = ['Freestyle', 'Racing', 'Long Range', 'Bangers']
+DRONE_SIZES = ['2.5"', '3"', '5"', '6"', '7"', '10"']
+FLYING_STYLES = ['Freestyle', 'Racing', 'Long Range', 'Bangers', 'Ciné Whoop']
 BATTERY_OPTIONS = ['Auto', '2S', '3S', '4S', '6S', '8S', '12S']
 
 DARK_STYLE = """

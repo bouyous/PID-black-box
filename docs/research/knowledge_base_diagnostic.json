@@ -618,6 +618,18 @@
           "rise_time_ms": {"warning": 55, "critical": 120},
           "overshoot_pct": {"warning": 30, "critical": 50},
           "health_score": {"good": 70, "warning": 50, "critical": 30}
+        },
+        "Ciné Whoop": {
+          "oscillation_score": {"warning": 0.06, "critical": 0.15},
+          "drift_score": {"warning": 0.04, "critical": 0.10},
+          "propwash_score": {"warning": 0.12, "critical": 0.25},
+          "noise_ratio": {"warning": 1.5, "critical": 2.5},
+          "hf_noise_ratio": {"warning": 0.03, "critical": 0.10},
+          "tracking_lag_ms": {"warning": 20, "critical": 40},
+          "rise_time_ms": {"warning": 80, "critical": 150},
+          "overshoot_pct": {"warning": 15, "critical": 28},
+          "health_score": {"good": 88, "warning": 72, "critical": 52},
+          "notes": "Frame plastique, hélices carénées < 3\". Vibrations élevées dues aux carènes. Priorité : fluidité vidéo maximale, dérive nulle, prop wash interdit."
         }
       },
       "Moteurs": {

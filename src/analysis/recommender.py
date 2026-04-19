@@ -137,6 +137,11 @@ DRONE_PROFILES = {
     # Règle : plus la pale est grande, plus on a besoin de D et moins de P / I.
     # Les gros drones résonnent à plus basse fréquence (moteurs tournent moins vite)
     # → dterm_lpf_min abaissé pour 7"+.
+    # 2.5" Ciné Whoop : frame plastique, hélices carénées → vibrations élevées,
+    # P et D bas, filtrage maximal, tolérance aux changements plus grande.
+    '2.5"': dict(max_delta_pct=50, p_range=(18, 48), d_range=(15, 38),
+                 i_range=(50, 160), f_range=(50, 160), d_min_ratio_floor=0.35,
+                 dterm_lpf_min_target=80, dterm_lpf_max_target=140),
     '3"':  dict(max_delta_pct=45, p_range=(25, 60), d_range=(18, 42),
                 i_range=(60, 180), f_range=(60, 180), d_min_ratio_floor=0.40,
                 dterm_lpf_min_target=90, dterm_lpf_max_target=160),
@@ -227,6 +232,25 @@ STYLE_TARGETS = {
         d_min_ratio=0.35,
         prefer_high_ff=False,
         prefer_high_d=False,
+    ),
+    # Ciné Whoop : vol cinématique, hélices carénées, frame plastique < 3".
+    # Priorité : fluidité maximale pour la vidéo, zéro oscillation visible,
+    # dérive nulle (horizon stable), prop wash quasi interdit.
+    # FF bas (pas de snap), D haut (amortit les vibrations des carènes),
+    # I haut (stabilité au vent pour la caméra).
+    'Ciné Whoop': dict(
+        osc_target=0.06,        osc_critical=0.15,
+        drift_target=0.04,      drift_critical=0.10,
+        propwash_target=0.12,   propwash_critical=0.25,
+        rise_target_ms=80,      rise_critical_ms=150,
+        overshoot_target=15,    overshoot_critical=28,
+        noise_target=1.5,       noise_critical=2.5,
+        hf_noise_target=0.03,   hf_noise_critical=0.10,
+        lag_target_ms=20,       lag_critical_ms=40,
+        d_min_ratio=0.55,
+        prefer_high_ff=False,
+        prefer_high_d=True,
+        prefer_high_i=True,
     ),
 }
 DEFAULT_STYLE = STYLE_TARGETS['Freestyle']
@@ -321,9 +345,22 @@ def _apply_feel(style: dict, feel: FlightFeel) -> dict:
 # ---------------------------------------------------------------------------
 
 SLIDER_REFERENCE = {
+    # 2.5" Ciné Whoop : filtrage max, D très haut, FF minimal, master haut.
+    ('2.5"', 'Ciné Whoop'): dict(master=150, pi=88,  i=92,  d=148, dmax=108,
+                                  ff=82,  pitch_pi=100, dterm_mult=138, gyro_mult=42),
+    ('2.5"', 'Freestyle'):  dict(master=170, pi=100, i=100, d=152, dmax=112,
+                                  ff=100, pitch_pi=100, dterm_mult=132, gyro_mult=48),
+    ('2.5"', 'Racing'):     dict(master=155, pi=105, i=105, d=142, dmax=112,
+                                  ff=118, pitch_pi=100, dterm_mult=132, gyro_mult=52),
+    ('2.5"', 'Long Range'): dict(master=155, pi=90,  i=85,  d=142, dmax=95,
+                                  ff=92,  pitch_pi=100, dterm_mult=122, gyro_mult=42),
+    ('2.5"', 'Bangers'):    dict(master=145, pi=100, i=100, d=122, dmax=100,
+                                  ff=92,  pitch_pi=100, dterm_mult=142, gyro_mult=58),
     # 3" Cinewhoop (UAV Tech) : filtrage max, D haut, master haut.
     ('3"',  'Freestyle'):  dict(master=160, pi=100, i=100, d=140, dmax=100,
                                  ff=100, pitch_pi=100, dterm_mult=120, gyro_mult=60),
+    ('3"',  'Ciné Whoop'): dict(master=155, pi=88,  i=92,  d=148, dmax=108,
+                                 ff=82,  pitch_pi=100, dterm_mult=132, gyro_mult=52),
     ('3"',  'Long Range'): dict(master=150, pi=95,  i=90,  d=130, dmax=90,
                                  ff=100, pitch_pi=100, dterm_mult=110, gyro_mult=60),
     # 5" Freestyle : UAV Tech 575-650g / fpvian basher.
@@ -335,6 +372,8 @@ SLIDER_REFERENCE = {
                                  ff=110, pitch_pi=100, dterm_mult=100, gyro_mult=80),
     ('5"',  'Bangers'):    dict(master=115, pi=100, i=100, d=100, dmax=100,
                                  ff=120, pitch_pi=100, dterm_mult=130, gyro_mult=150),
+    ('5"',  'Ciné Whoop'): dict(master=130, pi=92,  i=95,  d=122, dmax=90,
+                                 ff=88,  pitch_pi=100, dterm_mult=118, gyro_mult=82),
     # 6-7" : UAV Tech LR → master 150, PI bas, D haut, filtres serrés.
     ('6"',  'Freestyle'):  dict(master=140, pi=100, i=95,  d=120, dmax=90,
                                  ff=130, pitch_pi=100, dterm_mult=110, gyro_mult=100),
@@ -342,15 +381,21 @@ SLIDER_REFERENCE = {
                                  ff=115, pitch_pi=100, dterm_mult=100, gyro_mult=60),
     ('6"',  'Racing'):     dict(master=110, pi=105, i=105, d=110, dmax=100,
                                  ff=125, pitch_pi=100, dterm_mult=110, gyro_mult=100),
+    ('6"',  'Ciné Whoop'): dict(master=140, pi=88,  i=90,  d=128, dmax=88,
+                                 ff=88,  pitch_pi=100, dterm_mult=108, gyro_mult=68),
     ('7"',  'Freestyle'):  dict(master=145, pi=95,  i=90,  d=130, dmax=90,
                                  ff=125, pitch_pi=100, dterm_mult=90,  gyro_mult=70),
     ('7"',  'Long Range'): dict(master=150, pi=85,  i=75,  d=135, dmax=85,
                                  ff=110, pitch_pi=100, dterm_mult=80,  gyro_mult=50),
+    ('7"',  'Ciné Whoop'): dict(master=145, pi=82,  i=80,  d=132, dmax=85,
+                                 ff=82,  pitch_pi=100, dterm_mult=85,  gyro_mult=52),
     # 10" : extrapolé (preset UAV_tech_10in non récupéré — valeurs max de la tendance).
     ('10"', 'Long Range'): dict(master=155, pi=80,  i=70,  d=140, dmax=80,
                                  ff=105, pitch_pi=100, dterm_mult=70,  gyro_mult=45),
     ('10"', 'Freestyle'):  dict(master=150, pi=90,  i=85,  d=135, dmax=85,
                                  ff=115, pitch_pi=100, dterm_mult=75,  gyro_mult=50),
+    ('10"', 'Ciné Whoop'): dict(master=150, pi=78,  i=75,  d=138, dmax=80,
+                                 ff=78,  pitch_pi=100, dterm_mult=72,  gyro_mult=38),
 }
 
 
