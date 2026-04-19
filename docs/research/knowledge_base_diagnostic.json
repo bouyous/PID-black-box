@@ -1,0 +1,639 @@
+{
+  "Knowledge_Base_Diagnostic": {
+    "Version": "2.0",
+    "Derniere_Mise_A_Jour": "2026-04-19",
+    "Symptomes": {
+      "Gelo (Oscillations Visuelles/Vibratoires)": {
+        "Definition": "Manifestation visuelle de vibrations excessives, souvent observée sur les caméras HD en vol stable. Indique un déséquilibre ou une transmission vibratoire non absorbée.",
+        "Gravite_Minimale": ["Majeure"],
+        "Diagnostic_Matériel_Physique": [
+          {
+            "Cause": "Jeu excessif des roulements moteurs (Bearing Play)",
+            "Symptome_Observé": "Bruit moteur irrégulier, tremblements à l'accélération.",
+            "Test_Diagnostique": "Inspection visuelle et test tactile du jeu dans les roulements. Analyse de la fréquence vibratoire par accéléromètre (Black Box).",
+            "Action_Corrective": "Remplacement des roulements moteurs ou des moteurs entiers si le jeu est critique.",
+            "Impact_sur_Systeme": "Réduit le bruit de fond mécanique, permettant aux contrôleurs PID d'opérer dans une plage plus stable."
+          },
+          {
+            "Cause": "Hélice abîmée / Déséquilibre du cadre (Loose Hardware)",
+            "Symptome_Observé": "Tremblements localisés ou pulsations à haute fréquence.",
+            "Test_Diagnostique": "Inspection visuelle des hélices et de l'assemblage moteur/support. Vérification du serrage de toutes les vis critiques.",
+            "Action_Corrective": "Remplacement de l'hélice, resserrage ou ajout de fixations anti-vibrations (dampers).",
+            "Impact_sur_Systeme": "Assure la cohérence des forces exercées sur le cadre."
+          },
+          {
+            "Cause": "Anti-vibrations (grommets) usés ou inadaptés",
+            "Symptome_Observé": "Vibrations transmises à la FC malgré un cadre rigide. Fréquences multiples dans la BBL.",
+            "Test_Diagnostique": "Inspection des silentblocs sous la FC. Vérifier dureté (trop mou = résonance basse, trop dur = pas d'isolation).",
+            "Action_Corrective": "Remplacer les grommets par une dureté adaptée à la masse du drone (30A pour 5\", 20A pour 7\"+).",
+            "Impact_sur_Systeme": "Isole mécaniquement la FC du cadre et réduit le bruit gyro brut."
+          },
+          {
+            "Cause": "Caméra HD mal fixée (Naked Gopro, Insta360, etc.)",
+            "Symptome_Observé": "Gello uniquement sur la vidéo, gyro BBL propre.",
+            "Test_Diagnostique": "Comparer la fréquence du gello vidéo avec les fréquences vibratoires BBL. Si BBL propre = problème de fixation caméra.",
+            "Action_Corrective": "Mousse anti-vibrations sous la caméra, serrage des vis de support, stabilisation en post (Gyroflow/ReelSteady).",
+            "Impact_sur_Systeme": "N'affecte pas les PIDs. Problème purement mécanique/optique."
+          }
+        ],
+        "Diagnostic_Logiciel_Firmware": [
+          {
+            "Cause": "Réponse PID trop réactive aux vibrations (Over-correction)",
+            "Symptome_Observé": "Oscillations en boucle fermée, 'Fluttering' visible.",
+            "Test_Diagnostique": "Analyse de la fréquence des oscillations dans le Black Box. Identification d'une bande passante problématique.",
+            "Paramètres_à_Ajuster": {
+              "PID": ["P-gain (axe concerné)", "D-gain"],
+              "Filtres": ["Gyro Filter Type", "Lowpass/Notch Cutoff"]
+            },
+            "Recommandation_d'Action": "Réduire légèrement le gain P pour adoucir la réponse, et ajuster les filtres (e.g., passer d'un filtre Notch à un Lowpass plus large) pour atténuer la bande de fréquences vibratoires.",
+            "Risque_de_Sur-ajustement": "Si trop faible, le drone devient 'mou' ou ne réagit pas aux corrections rapides."
+          },
+          {
+            "Cause": "Filtre gyro trop ouvert (gyro_lpf1_static_hz trop haut)",
+            "Symptome_Observé": "Bruit haute fréquence dans les logs gyro, oscillations rapides même à throttle stable.",
+            "Test_Diagnostique": "Vérifier gyro_lpf1_static_hz dans la BBL header. Comparer noise_ratio avec la cible de style.",
+            "Paramètres_à_Ajuster": {
+              "Filtres": ["gyro_lpf1_static_hz", "dterm_lpf1_dyn_max_hz"]
+            },
+            "Recommandation_d'Action": "Abaisser gyro_lpf1_static_hz (ex: 250 → 200) et serrer dterm_lpf1_dyn_max_hz selon la taille du drone.",
+            "Risque_de_Sur-ajustement": "Filtres trop serrés = latence accrue = drone 'mou', FF moins efficace."
+          },
+          {
+            "Cause": "Filtre RPM (DSHOT bidirectionnel) inactif ou mal configuré",
+            "Symptome_Observé": "Pics FFT aux harmoniques moteurs (1x, 2x, 3x la fréquence moteur). Vibrations corrélées au throttle.",
+            "Test_Diagnostique": "Vérifier dshot_bidir = ON et rpm_filter_harmonics > 0 dans la BBL. Analyser la FFT : pics à fréquences fixes liées au régime moteur.",
+            "Paramètres_à_Ajuster": {
+              "Filtres": ["dshot_bidir", "rpm_filter_harmonics", "dyn_notch_count"]
+            },
+            "Recommandation_d'Action": "Activer DSHOT bidirectionnel dans l'onglet Motors de Betaflight. Régler rpm_filter_harmonics = 3 minimum.",
+            "Risque_de_Sur-ajustement": "Aucun : le filtre RPM est très précis et n'introduit pas de latence globale."
+          }
+        ],
+        "Diagnostic_Électrique": [
+          {
+            "Cause": "Bruit sur l'alimentation de la FC (VCC ripple)",
+            "Symptome_Observé": "Oscillations à fréquence fixe, indépendantes du throttle. Bruit dans le signal gyro.",
+            "Test_Diagnostique": "Mesure oscilloscope sur le VCC 5V de la FC. Vérifier la qualité du condensateur de découplage sur le BEC.",
+            "Action_Corrective": "Ajouter un condensateur 1000µF-2200µF 35V sur les pads de batterie. Vérifier que le BEC/régulateur de la FC est de qualité.",
+            "Impact_sur_Systeme": "Un VCC stable = gyro stable = PIDs stables."
+          }
+        ]
+      },
+      "Geno (Mouvement Erratique/Instabilité en Vol)": {
+        "Definition": "Mouvements imprévisibles et brusques du drone, indiquant une perte de contrôle momentanée dans un ou plusieurs axes.",
+        "Gravite_Minimale": ["Critique"],
+        "Diagnostic_Matériel_Physique": [
+          {
+            "Cause": "Déconnexion électrique intermittente (Câble desserré)",
+            "Symptome_Observé": "Perte de puissance soudaine ou mouvement saccadé sur un axe.",
+            "Test_Diagnostique": "Vérification des soudures et connexions électriques. Test sous charge (vol simulé).",
+            "Action_Corrective": "Resouder les points faibles, vérifier le câblage principal et l'alimentation.",
+            "Impact_sur_Systeme": "Assure la continuité du signal de commande aux ESCs/moteurs."
+          },
+          {
+            "Cause": "Cadre fissuré ou bras cassé partiellement",
+            "Symptome_Observé": "Instabilité sur un axe précis, souvent aggravée par les vibrations.",
+            "Test_Diagnostique": "Inspection visuelle des bras et jonctions. Test de flexion à la main (flex anormal = fissure).",
+            "Action_Corrective": "Remplacement du bras ou du cadre complet si la fissure est structurelle.",
+            "Impact_sur_Systeme": "Un bras souple transmet les vibrations de façon asymétrique, désaxe les moteurs."
+          }
+        ],
+        "Diagnostic_Logiciel_Firmware": [
+          {
+            "Cause": "Gain PID inadéquat ou déconnexion des filtres",
+            "Symptome_Observé": "Perte soudaine de contrôle, sur-correction extrême.",
+            "Test_Diagnostique": "Analyse du Black Box : Pics anormaux dans les données Gyro/Accéléromètre. Vérification que tous les axes sont correctement filtrés.",
+            "Paramètres_à_Ajuster": {
+              "PID": ["P-gain (général)", "I-gain"],
+              "Filtres": ["Gyro Filter Type", "Rate Filter"]
+            },
+            "Recommandation_d'Action": "Vérifier si l'erreur d'intégration (I-term) n'est pas trop élevée. Si le problème est cyclique, ajuster les filtres pour éliminer le bruit de haute fréquence qui perturbe l'intégrateur.",
+            "Risque_de_Sur-ajustement": "Un I-gain trop élevé peut entraîner un 'overshoot' permanent ou une accumulation d'erreurs."
+          },
+          {
+            "Cause": "Anti-Gravity trop agressif",
+            "Symptome_Observé": "Instabilité lors des changements rapides de throttle, surtout en montée/descente verticale.",
+            "Test_Diagnostique": "Vérifier anti_gravity_gain dans la BBL. Corréler les spikes I-term avec les variations throttle.",
+            "Paramètres_à_Ajuster": {
+              "PID": ["anti_gravity_gain"],
+              "Filtres": ["anti_gravity_cutoff_hz"]
+            },
+            "Recommandation_d'Action": "Réduire anti_gravity_gain (valeur par défaut BF : 80). Descendre à 60-70 si instable.",
+            "Risque_de_Sur-ajustement": "Trop bas = perd le bénéfice de l'anti-gravity sur les manœuvres throttle pump."
+          }
+        ],
+        "Diagnostic_Électrique": [
+          {
+            "Cause": "ESC Desync (perte de synchronisation moteur)",
+            "Symptome_Observé": "Flip/roll brutal soudain, moteur qui s'emballe ou s'arrête une fraction de seconde.",
+            "Test_Diagnostique": "Analyse BBL : chercher un spike moteur anormal sur un seul moteur. Comparer les 4 traces motor_output. Vérifier les logs ESC (Bluejay/BLHeli32).",
+            "Action_Corrective": "Mettre à jour le firmware ESC. Activer DSHOT600 à la place de DSHOT300. Réduire dshot_idle_value si > 5,5%. Activer demag_compensation = High dans BLHeli.",
+            "Impact_sur_Systeme": "Un desync = perte momentanée de poussée sur un moteur = déséquilibre critique."
+          },
+          {
+            "Cause": "Chute de tension batterie brutale (voltage sag)",
+            "Symptome_Observé": "Instabilité progressive en fin de pack, surtout à full throttle. Betaflight peut signaler une 'brownout'.",
+            "Test_Diagnostique": "Vérifier la courbe voltage_batt dans la BBL. Un sag > 0,5V/cell sous charge indique une batterie dégradée ou sous-dimensionnée (C rating insuffisant).",
+            "Action_Corrective": "Remplacer la batterie (cells internes dégradées). Utiliser une capacité supérieure ou un C rating plus élevé.",
+            "Impact_sur_Systeme": "La tension alimente directement les ESCs : une tension instable = puissance moteur instable."
+          }
+        ]
+      },
+      "Prop Wash (Oscillations Post-Manœuvre)": {
+        "Definition": "Oscillations basses fréquences apparaissant après un virage serré, une figure, ou un changement brusque de direction. Le drone 'rebondit' quelques dixièmes de seconde avant de se stabiliser.",
+        "Gravite_Minimale": ["Mineure à Majeure selon l'intensité"],
+        "Diagnostic_Matériel_Physique": [
+          {
+            "Cause": "Hélices à pas trop faible ou usées",
+            "Symptome_Observé": "Prop wash amplifié même avec de bons PIDs. Manque d'autorité en récupération.",
+            "Test_Diagnostique": "Comparer avec des hélices neuves. Un simple remplacement suffit souvent.",
+            "Action_Corrective": "Remplacer par des hélices neuves, bi-lames ou tri-lames selon le style de vol.",
+            "Impact_sur_Systeme": "Des hélices neuves réduisent la turbulence dans leur propre flux d'air."
+          }
+        ],
+        "Diagnostic_Logiciel_Firmware": [
+          {
+            "Cause": "D_min trop bas par rapport à D (manque d'amortissement en transition)",
+            "Symptome_Observé": "Oscillations basses fréquences (~10-30Hz) après abandon de virage ou coupure throttle.",
+            "Test_Diagnostique": "Vérifier le ratio d_min/D dans la BBL header. Ratio < 0,45 sur Freestyle = trop bas.",
+            "Paramètres_à_Ajuster": {
+              "PID": ["d_min_roll", "d_min_pitch"],
+              "Filtres": ["dterm_lpf1_dyn_min_hz"]
+            },
+            "Recommandation_d'Action": "Augmenter D_min jusqu'à 85-90% de D (style Freestyle). En Racing, 55-70% de D est normal.",
+            "Risque_de_Sur-ajustement": "D_min = D = les moteurs chauffent davantage (D toujours au max)."
+          },
+          {
+            "Cause": "I-term trop lent à corriger (iterm_relax trop agressif)",
+            "Symptome_Observé": "Drift / oscillations lentes après une figure de rotation rapide.",
+            "Test_Diagnostique": "Vérifier iterm_relax_type et iterm_relax_cutoff. Un cutoff trop bas empêche l'I-term de travailler en sortie de virage.",
+            "Paramètres_à_Ajuster": {
+              "PID": ["iterm_relax_cutoff"]
+            },
+            "Recommandation_d'Action": "Augmenter iterm_relax_cutoff (ex : 15 → 20) pour que l'I-term reprenne plus vite après une rotation.",
+            "Risque_de_Sur-ajustement": "Trop haut = l'iterm_relax ne protège plus le I-term pendant les flips/rolls rapides."
+          },
+          {
+            "Cause": "FF trop agressif (sursaut au relâchement du stick)",
+            "Symptome_Observé": "Oscillation unique et brève à chaque retour stick au neutre.",
+            "Test_Diagnostique": "Corréler les spikes setpoint avec les oscillations gyro. Si le spike correspond exactement au relâchement = FF sur-réactif.",
+            "Paramètres_à_Ajuster": {
+              "PID": ["f_roll", "f_pitch", "ff_smooth_factor", "ff_spike_limit"]
+            },
+            "Recommandation_d'Action": "Augmenter ff_smooth_factor (ex: 40 → 55) et ff_spike_limit (ex: 55 → 65) pour lisser les impulsions FF.",
+            "Risque_de_Sur-ajustement": "Trop lisse = FF perd son intérêt (latence réintroduite)."
+          }
+        ],
+        "Diagnostic_Électrique": [
+          {
+            "Cause": "Temps de réponse ESC trop long (firmware obsolète / protocole lent)",
+            "Symptome_Observé": "Prop wash résistant aux ajustements PID. Les corrections arrivent en retard sur les oscillations.",
+            "Test_Diagnostique": "Vérifier la version firmware ESC. Comparer DSHOT300 vs DSHOT600.",
+            "Action_Corrective": "Mettre à jour le firmware ESC (BLHeli32 → Bluejay si possible). Passer à DSHOT600.",
+            "Impact_sur_Systeme": "Un ESC rapide réduit la latence de la chaîne de commande moteur."
+          }
+        ]
+      },
+      "Overshoot (Dépassement de Consigne)": {
+        "Definition": "Le drone dépasse la position demandée par le stick avant de revenir à la bonne trajectoire. Visible sur la BBL : gyro dépasse setpoint puis oscille en sens inverse.",
+        "Gravite_Minimale": ["Mineure"],
+        "Seuils_Critiques": {
+          "Freestyle": {"warning_pct": 10, "critical_pct": 22},
+          "Racing": {"warning_pct": 7, "critical_pct": 16},
+          "Long Range": {"warning_pct": 22, "critical_pct": 38},
+          "Bangers": {"warning_pct": 30, "critical_pct": 50}
+        },
+        "Diagnostic_Matériel_Physique": [
+          {
+            "Cause": "Hélices trop lourdes ou à trop fort pas (inertie trop grande)",
+            "Symptome_Observé": "Overshoot structurellement élevé même avec PIDs bien réglés.",
+            "Test_Diagnostique": "Tester avec des hélices plus légères ou à pas plus court.",
+            "Action_Corrective": "Choisir des hélices adaptées au poids moteur et à la taille du cadre.",
+            "Impact_sur_Systeme": "L'inertie des hélices détermine directement la réponse au freinage moteur."
+          }
+        ],
+        "Diagnostic_Logiciel_Firmware": [
+          {
+            "Cause": "P-gain trop élevé (drone sur-corrige)",
+            "Symptome_Observé": "Gyro dépasse le setpoint de façon constante sur tous les axes.",
+            "Test_Diagnostique": "Vérifier oscillation_score et overshoot_pct dans l'analyse BBL.",
+            "Paramètres_à_Ajuster": {
+              "PID": ["p_roll", "p_pitch"]
+            },
+            "Recommandation_d'Action": "Réduire P de 6-10% et vérifier l'effet en vol.",
+            "Risque_de_Sur-ajustement": "P trop bas = drone mou, peu réactif."
+          },
+          {
+            "Cause": "D-gain insuffisant (manque d'amortissement)",
+            "Symptome_Observé": "Overshoot sur les entrées franches, bruit D-term faible (marge disponible).",
+            "Test_Diagnostique": "Vérifier d_noise_rms. Si faible = D peut monter. Ratio D/P < 0,5 = potentiellement sous-amorti.",
+            "Paramètres_à_Ajuster": {
+              "PID": ["d_roll", "d_pitch"]
+            },
+            "Recommandation_d'Action": "Augmenter D de 8% et observer la température moteur avant d'aller plus loin.",
+            "Risque_de_Sur-ajustement": "D trop haut = bruit excessif = chauffe moteurs."
+          },
+          {
+            "Cause": "FF trop haut (drone 'sursaute' sur les entrées rapides)",
+            "Symptome_Observé": "Overshoot uniquement sur les mouvements rapides du stick. Lag tracking faible (< cible style).",
+            "Test_Diagnostique": "Corréler tracking_lag_ms et overshoot_pct. Si lag < cible ET overshoot > cible = FF trop fort.",
+            "Paramètres_à_Ajuster": {
+              "PID": ["f_roll", "f_pitch"]
+            },
+            "Recommandation_d'Action": "Réduire FF de 8% ou augmenter ff_smooth_factor.",
+            "Risque_de_Sur-ajustement": "FF insuffisant = drone 'en retard' sur le stick."
+          }
+        ],
+        "Diagnostic_Électrique": []
+      },
+      "Drone Mou / Pas Locké (Undertuned)": {
+        "Definition": "Le drone semble flottant, met du temps à répondre aux ordres du stick, et ne suit pas la trajectoire demandée avec précision. Sensation de 'retard'.",
+        "Gravite_Minimale": ["Mineure"],
+        "Diagnostic_Matériel_Physique": [
+          {
+            "Cause": "Moteurs sous-dimensionnés pour le poids du drone",
+            "Symptome_Observé": "Manque de punch général, temps de réponse physiquement limité.",
+            "Test_Diagnostique": "Vérifier rapport poids/poussée (thrust-to-weight ratio). Idéal freestyle : 8:1 à 12:1.",
+            "Action_Corrective": "Changer pour des moteurs avec plus de KV ou de stator plus grand.",
+            "Impact_sur_Systeme": "Les PIDs ne peuvent pas compenser un manque de puissance physique."
+          }
+        ],
+        "Diagnostic_Logiciel_Firmware": [
+          {
+            "Cause": "P-gain trop bas",
+            "Symptome_Observé": "Réponse lente, drone qui 'fait son chemin' au lieu de s'aligner immédiatement.",
+            "Test_Diagnostique": "avg_rise_time_ms >> style rise_target_ms, oscillation_score faible.",
+            "Paramètres_à_Ajuster": {
+              "PID": ["p_roll", "p_pitch"]
+            },
+            "Recommandation_d'Action": "Monter P de 10-15% jusqu'à trouver les premières oscillations, puis reculer de 5%.",
+            "Risque_de_Sur-ajustement": "P trop haut = oscillations puis crash potentiel."
+          },
+          {
+            "Cause": "FF trop bas (stick manque de mordant)",
+            "Symptome_Observé": "Réponse initiale molle, tracking_lag_ms très supérieur à la cible.",
+            "Test_Diagnostique": "Comparer tracking_lag_ms avec lag_target_ms du style. Si ratio > 2 = FF clairement insuffisant.",
+            "Paramètres_à_Ajuster": {
+              "PID": ["f_roll", "f_pitch"]
+            },
+            "Recommandation_d'Action": "Augmenter FF de 15-20% ou utiliser le slider Master pour monter l'ensemble.",
+            "Risque_de_Sur-ajustement": "Dépasser 200 (5\") sur FF = drone nerveux et instable aux vents latéraux."
+          },
+          {
+            "Cause": "Filtres trop serrés (latence de filtre excessive)",
+            "Symptome_Observé": "Drone 'mou' malgré des PIDs élevés. Faible bruit dans la BBL.",
+            "Test_Diagnostique": "Vérifier gyro_lpf1_static_hz et dterm_lpf1_dyn_max_hz. Si hf_noise_ratio << cible = les filtres étouffent le signal utile.",
+            "Paramètres_à_Ajuster": {
+              "Filtres": ["gyro_lpf1_static_hz", "dterm_lpf1_dyn_max_hz"]
+            },
+            "Recommandation_d'Action": "Ouvrir progressivement dterm_lpf1_dyn_max_hz (+15%) et réévaluer.",
+            "Risque_de_Sur-ajustement": "Filtres trop ouverts = bruit gyro amplifié = oscillations et chauffe moteurs."
+          }
+        ],
+        "Diagnostic_Électrique": [
+          {
+            "Cause": "Batteries vieillissantes (résistance interne élevée)",
+            "Symptome_Observé": "Drone mou uniquement en fin de pack ou en vol chargé. Puissance maximale limitée.",
+            "Test_Diagnostique": "Mesurer la résistance interne avec un chargeur capable (ex: iCharger). > 8mΩ/cell pour une 4S = batterie à remplacer.",
+            "Action_Corrective": "Remplacement des accumulateurs. Recycler les packs dégradés.",
+            "Impact_sur_Systeme": "La résistance interne limite le courant de pic disponible pour les accélérations franches."
+          }
+        ]
+      },
+      "Dérive en Ligne Droite (Drift)": {
+        "Definition": "Le drone s'écarte lentement de la trajectoire prévue en ligne droite ou en vol stationnaire, sans intervention sur le stick.",
+        "Gravite_Minimale": ["Mineure"],
+        "Seuils_Critiques": {
+          "Freestyle": {"warning": 0.08, "critical": 0.20},
+          "Racing": {"warning": 0.14, "critical": 0.28},
+          "Long Range": {"warning": 0.05, "critical": 0.12}
+        },
+        "Diagnostic_Matériel_Physique": [
+          {
+            "Cause": "Moteur tordu ou axe non aligné après crash",
+            "Symptome_Observé": "Dérive constante sur un axe, trim radio ne suffit pas.",
+            "Test_Diagnostique": "Faire tourner le moteur à la main et observer la concentricité de la cloche. Vérifier l'alignement du bras.",
+            "Action_Corrective": "Redresser l'axe moteur si possible, ou remplacer le moteur.",
+            "Impact_sur_Systeme": "Un moteur tordu génère une poussée non parallèle à l'axe du drone."
+          },
+          {
+            "Cause": "Centre de gravité décalé",
+            "Symptome_Observé": "Dérive constante d'un côté, compensée manuellement.",
+            "Test_Diagnostique": "Équilibrer le drone sur un doigt. La batterie doit être centrée longitudinalement.",
+            "Action_Corrective": "Repositionner la batterie pour centrer le CG.",
+            "Impact_sur_Systeme": "Un CG décalé crée une force permanente que l'I-term doit compenser."
+          }
+        ],
+        "Diagnostic_Logiciel_Firmware": [
+          {
+            "Cause": "I-gain trop bas (ne compense pas les perturbations permanentes)",
+            "Symptome_Observé": "Oscillation basse fréquence persistante en ligne droite.",
+            "Test_Diagnostique": "drift_score > drift_target avec oscillation_score faible.",
+            "Paramètres_à_Ajuster": {
+              "PID": ["i_roll", "i_pitch"]
+            },
+            "Recommandation_d'Action": "Augmenter I de 10-15% et observer en vol calme.",
+            "Risque_de_Sur-ajustement": "I trop haut = I-term wind-up = overshoot prolongé en sortie de virage."
+          },
+          {
+            "Cause": "Décalage gyro (gyro offset / température)",
+            "Symptome_Observé": "Dérive systématique toujours dans la même direction, aggravée au chaud.",
+            "Test_Diagnostique": "Vérifier si la dérive augmente avec la température de la FC. Lancer un calibrage gyro à froid.",
+            "Paramètres_à_Ajuster": {
+              "Firmware": ["Calibration gyro", "gyro_calib_noise_limit"]
+            },
+            "Recommandation_d'Action": "Recalibrer le gyro à froid via Betaflight Configurator. Vérifier que la FC n'est pas trop proche d'une source de chaleur.",
+            "Risque_de_Sur-ajustement": "Aucun si la calibration est correctement réalisée."
+          }
+        ],
+        "Diagnostic_Électrique": []
+      },
+      "Surchauffe Moteurs": {
+        "Definition": "Un ou plusieurs moteurs présentent une température anormalement élevée après le vol (> 10°C au-dessus de l'ambiant est le seuil de vigilance, > 60°C = danger).",
+        "Gravite_Minimale": ["Majeure"],
+        "Seuils_Critiques": {
+          "Attention": "> 10°C au-dessus de l'ambiant après 30s de vol doux",
+          "Danger": "> 60°C température absolue",
+          "Arrêt_immediat": "> 70°C ou odeur de plastique brûlé"
+        },
+        "Diagnostic_Matériel_Physique": [
+          {
+            "Cause": "Roulements moteurs usés (friction interne)",
+            "Symptome_Observé": "Un moteur chauffe plus que les autres. Bruit caractéristique à haute vitesse.",
+            "Test_Diagnostique": "Faire tourner chaque moteur à la main. Comparer la résistance et écouter les bruits.",
+            "Action_Corrective": "Remplacer les roulements ou le moteur.",
+            "Impact_sur_Systeme": "Friction mécanique convertie directement en chaleur."
+          },
+          {
+            "Cause": "Hélice mal équilibrée (vibrations transmises aux bobinages)",
+            "Symptome_Observé": "Tous les moteurs chauds, pas uniformément.",
+            "Test_Diagnostique": "Équilibrer les hélices avec un balanceur. Observer si la chauffe diminue.",
+            "Action_Corrective": "Rééquilibrage ou remplacement des hélices.",
+            "Impact_sur_Systeme": "Les vibrations HF font travailler les ESCs en correction permanente, augmentant la consommation."
+          }
+        ],
+        "Diagnostic_Logiciel_Firmware": [
+          {
+            "Cause": "D-gain trop élevé (bruit D-term = courant continu vers les moteurs)",
+            "Symptome_Observé": "Tous les moteurs chauds de façon uniforme. Bruit audible sur les moteurs.",
+            "Test_Diagnostique": "Vérifier d_noise_rms. Si > noise_critical * 1,5 = D trop haut.",
+            "Paramètres_à_Ajuster": {
+              "PID": ["d_roll", "d_pitch"],
+              "Filtres": ["dterm_lpf1_dyn_max_hz"]
+            },
+            "Recommandation_d'Action": "Réduire D de 10-15% ou abaisser dterm_lpf1_dyn_max_hz pour filtrer le bruit D-term.",
+            "Risque_de_Sur-ajustement": "D trop bas = prop wash aggravé."
+          },
+          {
+            "Cause": "dshot_idle_value trop élevé (moteurs toujours chargés à l'arrêt)",
+            "Symptome_Observé": "Moteurs chauds même en vol lent ou stationnaire.",
+            "Test_Diagnostique": "Vérifier dshot_idle_value dans la config. Valeur normale : 4,5-5,5%. Au-delà = inefficace.",
+            "Paramètres_à_Ajuster": {
+              "Firmware": ["dshot_idle_value"]
+            },
+            "Recommandation_d'Action": "Réduire dshot_idle_value à 4,5-5% (550-600 sur plage 0-10000).",
+            "Risque_de_Sur-ajustement": "Trop bas = moteur s'arrête à l'attérrissage, risque de flip au décollage."
+          }
+        ],
+        "Diagnostic_Électrique": [
+          {
+            "Cause": "ESC en surchauffe par underspec (ampérage moteur > rating ESC)",
+            "Symptome_Observé": "ESC chaud ou en protection thermique (coupure moteur). Odeur de résine.",
+            "Test_Diagnostique": "Mesurer la consommation de courant max en vol. Comparer avec le rating de l'ESC.",
+            "Action_Corrective": "Remplacer les ESCs par un modèle avec un rating supérieur. Ex : passer de 35A à 45A.",
+            "Impact_sur_Systeme": "Un ESC en limite thermique introduit des instabilités de puissance."
+          },
+          {
+            "Cause": "Mauvaise soudure ou résistance de contact élevée sur les pads moteur",
+            "Symptome_Observé": "Un seul moteur chaud, les autres à température normale.",
+            "Test_Diagnostique": "Vérifier la qualité des soudures sous loupe. Mesure résistance entre pad et fil moteur (< 0,1Ω normal).",
+            "Action_Corrective": "Resouder avec étain à haute qualité. Nettoyer les pads oxydés.",
+            "Impact_sur_Systeme": "Une résistance de contact = perte d'efficacité + chauffe localisée."
+          }
+        ]
+      },
+      "Perte de Puissance / Brownout": {
+        "Definition": "Chute soudaine et partielle ou totale de puissance, souvent liée à une chute de tension. Peut provoquer un crash ou une récupération automatique (Low Voltage Protection).",
+        "Gravite_Minimale": ["Critique"],
+        "Diagnostic_Matériel_Physique": [
+          {
+            "Cause": "Connecteur de batterie oxydé ou surchargé",
+            "Symptome_Observé": "Perte de puissance intermittente, parfois un seul côté de l'alimentation.",
+            "Test_Diagnostique": "Inspection visuelle du connecteur (XT30/XT60). Vérifier la chaleur sur le connecteur après un vol.",
+            "Action_Corrective": "Remplacer le connecteur par un modèle de qualité (XT60 Gold). Souder proprement.",
+            "Impact_sur_Systeme": "Un connecteur oxydé ajoute une résistance qui chute la tension sous charge."
+          }
+        ],
+        "Diagnostic_Logiciel_Firmware": [
+          {
+            "Cause": "Low Voltage Cutoff (LVC) mal calibré",
+            "Symptome_Observé": "Coupure prématurée en fin de pack. Betaflight avertit mais la batterie est encore utilisable.",
+            "Test_Diagnostique": "Vérifier vbat_min_cell_voltage. Comparer avec le seuil fabricant de la batterie.",
+            "Paramètres_à_Ajuster": {
+              "Firmware": ["vbat_min_cell_voltage", "vbat_warning_cell_voltage"]
+            },
+            "Recommandation_d'Action": "Régler vbat_min_cell_voltage à 3,3-3,4V selon le type d'accu. Ne pas descendre en dessous de 3,0V.",
+            "Risque_de_Sur-ajustement": "Trop bas = détérioration permanente des cellules LiPo."
+          }
+        ],
+        "Diagnostic_Électrique": [
+          {
+            "Cause": "Cellule LiPo déséquilibrée ou morte (cell mismatch)",
+            "Symptome_Observé": "Une cellule chute beaucoup plus vite que les autres. Brownout malgré une tension globale acceptable.",
+            "Test_Diagnostique": "Mesure par cellule après le vol avec un balanceur. Si une cellule < 3,5V alors que les autres sont à 3,8V = mismatch.",
+            "Action_Corrective": "Recycler immédiatement la batterie. Ne jamais recharger une cellule < 3,0V.",
+            "Impact_sur_Systeme": "La cellule la plus faible dicte la tension totale disponible."
+          },
+          {
+            "Cause": "BEC/régulateur FC sous-dimensionné (chute 5V sous charge video/GPS)",
+            "Symptome_Observé": "Perte de la caméra FPV ou d'un périphérique lors des accélérations, alors que le vol continue.",
+            "Test_Diagnostique": "Vérifier la consommation totale des périphériques sur le 5V. Comparer avec le rating du BEC interne.",
+            "Action_Corrective": "Ajouter un BEC externe (ex: Matek BEC 5V/3A) pour alimentation dédiée caméra/GPS.",
+            "Impact_sur_Systeme": "Un BEC saturé peut également faire redémarrer la FC."
+          }
+        ]
+      },
+      "Oscillations Hautes Fréquences (HF Noise)": {
+        "Definition": "Bruit haute fréquence persistant dans les données gyro, non corrélé avec les commandes pilote. Visible comme une 'fourrure' dans les logs BBL. Peut chauffer les moteurs sans affecter visiblement le vol.",
+        "Gravite_Minimale": ["Mineure à Majeure selon l'intensité"],
+        "Seuils_Critiques": {
+          "Freestyle": {"hf_noise_warning": 0.06, "hf_noise_critical": 0.18},
+          "Racing": {"hf_noise_warning": 0.18, "hf_noise_critical": 0.32},
+          "Long Range": {"hf_noise_warning": 0.04, "hf_noise_critical": 0.12}
+        },
+        "Diagnostic_Matériel_Physique": [
+          {
+            "Cause": "Montage FC rigide (sans isolation vibratoire)",
+            "Symptome_Observé": "Bruit HF structurellement élevé sur tous les axes indépendamment des PIDs.",
+            "Test_Diagnostique": "Retirer les vis FC et observer si le bruit diminue (test de diagnostic uniquement, ne pas voler ainsi).",
+            "Action_Corrective": "Monter la FC sur grommets souples (20-30A selon la masse du drone).",
+            "Impact_sur_Systeme": "Le couplage mécanique rigide transmet toutes les vibrations moteur/cadre au gyro."
+          }
+        ],
+        "Diagnostic_Logiciel_Firmware": [
+          {
+            "Cause": "Filtre gyro ouvert + D-term trop sensible",
+            "Symptome_Observé": "Bruit HF élevé (hf_noise_ratio > seuil critique). Moteurs légèrement chauds.",
+            "Test_Diagnostique": "Analyser la FFT : pic diffus sur 200-400Hz typique d'un gyro LPF trop ouvert.",
+            "Paramètres_à_Ajuster": {
+              "Filtres": ["gyro_lpf1_static_hz", "dterm_lpf1_dyn_max_hz", "dyn_notch_count"]
+            },
+            "Recommandation_d'Action": "Abaisser gyro_lpf1_static_hz (300 → 250 pour 5\"). Activer le notch dynamique sur 3 harmoniques.",
+            "Risque_de_Sur-ajustement": "Filtres trop serrés = latence = drone mou."
+          }
+        ],
+        "Diagnostic_Électrique": [
+          {
+            "Cause": "Interférence EMI des ESCs (switching noise)",
+            "Symptome_Observé": "Bruit corrélé au throttle, pics FFT fixes à fréquences ESC (ex: 48kHz switching).",
+            "Test_Diagnostique": "Corréler les pics FFT avec le régime throttle. Un pic à fréquence fixe = switching ESC.",
+            "Action_Corrective": "Ajouter des condensateurs de découplage sur les pads batterie (1000µF-2200µF 35V). Éloigner la FC des câbles de puissance.",
+            "Impact_sur_Systeme": "Le bruit électromagnétique des ESCs se couple par le câblage vers la FC."
+          }
+        ]
+      }
+    },
+    "Vecteur_Électrique": {
+      "Description": "Problèmes dont l'origine principale est électrique ou électronique, même si leurs symptômes sont souvent confondus avec des problèmes PID.",
+      "Problemes": {
+        "ESC_Desync": {
+          "Definition": "Perte de synchronisation entre le signal PWM/DSHOT et le moteur brushless. Le moteur 'perd le pas' et produit une poussée imprévisible pendant quelques millisecondes.",
+          "Causes_Courantes": [
+            "Firmware ESC obsolète",
+            "Protocole DSHOT trop lent (DSHOT150/300 sur moteurs à haute KV)",
+            "dshot_idle_value trop élevé combiné à des moteurs légers",
+            "Câblage moteur trop long ou avec inductance élevée",
+            "Condensateur de découplage absent sur les pads batterie"
+          ],
+          "Symptomes_BBL": [
+            "Spike isolé sur un seul moteur_output",
+            "Rotation brutale non provoquée (flip involontaire)",
+            "Corrélation avec régime moteur élevé"
+          ],
+          "Actions_Correctives": [
+            "Mettre à jour le firmware ESC vers Bluejay ou BLHeli32 récent",
+            "Activer demag_compensation = High dans BLHeli Suite",
+            "Passer à DSHOT600",
+            "Réduire dshot_idle_value à 4,5%",
+            "Ajouter condensateur 1000µF 35V sur les pads batterie"
+          ]
+        },
+        "Voltage_Sag": {
+          "Definition": "Chute de tension sous charge. La tension batterie chute significativement lors des accélérations, affectant la puissance disponible et parfois la FC elle-même.",
+          "Seuils": {
+            "Acceptable": "< 0,3V/cell de chute sous charge max",
+            "Attention": "0,3-0,5V/cell",
+            "Critique": "> 0,5V/cell"
+          },
+          "Causes_Courantes": [
+            "Résistance interne élevée (vieux accus)",
+            "C-rating insuffisant pour la consommation du drone",
+            "Connecteur XT60 oxydé",
+            "Câble de batterie trop fin ou trop long"
+          ],
+          "Actions_Correctives": [
+            "Mesurer la résistance interne par cellule (iCharger, Junsi)",
+            "Utiliser des accus avec un C-rating plus élevé",
+            "Remplacer le connecteur XT60",
+            "Raccourcir ou épaissir les câbles de puissance (minimum 16AWG pour 5\", 14AWG pour 7\"+)"
+          ]
+        },
+        "BEC_Instabilite": {
+          "Definition": "Le régulateur de tension 5V (ou 9V vidéo) de la FC ou d'un module externe présente des instabilités qui affectent les périphériques ou la FC elle-même.",
+          "Symptomes": [
+            "Reboot FC en vol (Betaflight rearm log)",
+            "Perte vidéo FPV aux pics de throttle",
+            "Gyro qui se recalibre en vol (vibration forte + BEC faible)"
+          ],
+          "Actions_Correctives": [
+            "Ajouter un BEC externe dédié pour la caméra/VTX",
+            "Vérifier que la somme des consommateurs 5V < 80% du rating BEC",
+            "Condensateur 100µF sur le pad 5V de la FC"
+          ]
+        },
+        "Interference_RC": {
+          "Definition": "Signal de télécommande perturbé par des interférences électromagnétiques ou une mauvaise installation de l'antenne récepteur.",
+          "Symptomes_BBL": [
+            "rcData spikes dans les logs",
+            "Warnings Failsafe sans perte de vue",
+            "Commandes 'jerkées' non intentionnelles"
+          ],
+          "Causes_Courantes": [
+            "Antenne récepteur trop proche des ESCs ou du câblage de puissance",
+            "Protocole SBUS vs ELRS : câblage inversé ou vitesse baud mauvaise",
+            "Interference WiFi ou vidéo analogique sur fréquences 2.4GHz"
+          ],
+          "Actions_Correctives": [
+            "Éloigner les antennes du câblage moteur (> 2cm minimum)",
+            "Orienter les antennes perpendiculairement l'une à l'autre",
+            "Passer à ExpressLRS si disponible",
+            "Vérifier rssi_channel et link_quality dans la BBL"
+          ]
+        }
+      }
+    },
+    "Valeurs_Critiques_Normalisées": {
+      "Description": "Seuils de référence par style de vol, utilisables pour l'interprétation automatique des métriques BBL.",
+      "Par_Style": {
+        "Freestyle": {
+          "oscillation_score": {"warning": 0.09, "critical": 0.20},
+          "drift_score": {"warning": 0.08, "critical": 0.20},
+          "propwash_score": {"warning": 0.09, "critical": 0.20},
+          "noise_ratio": {"warning": 2.3, "critical": 3.8},
+          "hf_noise_ratio": {"warning": 0.06, "critical": 0.18},
+          "tracking_lag_ms": {"warning": 4, "critical": 10},
+          "rise_time_ms": {"warning": 26, "critical": 50},
+          "overshoot_pct": {"warning": 10, "critical": 22},
+          "health_score": {"good": 85, "warning": 70, "critical": 50}
+        },
+        "Racing": {
+          "oscillation_score": {"warning": 0.07, "critical": 0.16},
+          "drift_score": {"warning": 0.14, "critical": 0.28},
+          "propwash_score": {"warning": 0.14, "critical": 0.28},
+          "noise_ratio": {"warning": 3.5, "critical": 5.8},
+          "hf_noise_ratio": {"warning": 0.18, "critical": 0.32},
+          "tracking_lag_ms": {"warning": 2, "critical": 6},
+          "rise_time_ms": {"warning": 20, "critical": 42},
+          "overshoot_pct": {"warning": 7, "critical": 16},
+          "health_score": {"good": 88, "warning": 72, "critical": 55}
+        },
+        "Long Range": {
+          "oscillation_score": {"warning": 0.10, "critical": 0.20},
+          "drift_score": {"warning": 0.05, "critical": 0.12},
+          "propwash_score": {"warning": 0.25, "critical": 0.45},
+          "noise_ratio": {"warning": 1.8, "critical": 2.8},
+          "hf_noise_ratio": {"warning": 0.04, "critical": 0.12},
+          "tracking_lag_ms": {"warning": 18, "critical": 35},
+          "rise_time_ms": {"warning": 70, "critical": 120},
+          "overshoot_pct": {"warning": 22, "critical": 38},
+          "health_score": {"good": 80, "warning": 65, "critical": 45}
+        },
+        "Bangers": {
+          "oscillation_score": {"warning": 0.22, "critical": 0.45},
+          "drift_score": {"warning": 0.28, "critical": 0.50},
+          "propwash_score": {"warning": 0.28, "critical": 0.50},
+          "noise_ratio": {"warning": 5.0, "critical": 8.5},
+          "hf_noise_ratio": {"warning": 0.25, "critical": 0.40},
+          "tracking_lag_ms": {"warning": 12, "critical": 25},
+          "rise_time_ms": {"warning": 55, "critical": 120},
+          "overshoot_pct": {"warning": 30, "critical": 50},
+          "health_score": {"good": 70, "warning": 50, "critical": 30}
+        }
+      },
+      "Moteurs": {
+        "temperature_ambiant_delta_warning_C": 10,
+        "temperature_absolue_danger_C": 60,
+        "temperature_absolue_stop_C": 70,
+        "motor_imbalance_dshot_warning": 80
+      },
+      "Batterie": {
+        "voltage_sag_per_cell_attention_V": 0.3,
+        "voltage_sag_per_cell_critique_V": 0.5,
+        "internal_resistance_per_cell_warning_mOhm": 8,
+        "vbat_min_cell_V": 3.3,
+        "vbat_warning_cell_V": 3.5
+      }
+    },
+    "Note_Methologique": "Base de données v2.0 — vecteur Électrique ajouté (ESC, batterie, BEC, interférences RC). Valeurs critiques normalisées par style de vol extraites du moteur d'analyse. Prochaines étapes : ajout des firmwares ESC (Bluejay vs BLHeli32), intégration des profils taille drone dans les recommandations hardware, et indexation des symptômes par fréquence d'occurrence terrain."
+  }
+}
