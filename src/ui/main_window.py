@@ -460,7 +460,8 @@ class MainWindow(QMainWindow):
                 continue
             feel = self._feel_box.current_feel()
             rp = generate_report(sa, self._last_cfg, size, style, bat_cells, feel)
-            new_diag = DiagnosticWidget(self._last_cfg, rp, size)
+            new_diag = DiagnosticWidget(self._last_cfg, rp, size,
+                                        flight_type=getattr(sa, 'flight_type', None))
             inner_tabs.removeTab(diag_idx)
             inner_tabs.insertTab(diag_idx, new_diag, "Diagnostic")
             inner_tabs.setCurrentIndex(diag_idx)
@@ -522,7 +523,8 @@ class MainWindow(QMainWindow):
         if 'motor[0]' in df.columns:
             inner.addTab(MotorPlotWidget(df), "Moteurs")
         inner.addTab(FftWidget(df, cfg), "FFT")
-        inner.addTab(DiagnosticWidget(cfg, rp, self._size_combo.currentText()), "Diagnostic")
+        inner.addTab(DiagnosticWidget(cfg, rp, self._size_combo.currentText(),
+                                      flight_type=sa.flight_type), "Diagnostic")
 
         layout.addWidget(inner)
         return widget

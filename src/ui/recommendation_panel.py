@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from analysis.analyzer import FlightTypeResult
 from analysis.header_parser import FlightConfig
 from analysis.recommender import DiagnosticReport, Recommendation, Severity, AXIS_NAME
 from analysis.sliders import compute_sliders
@@ -137,8 +138,21 @@ class GenericCard(QFrame):
 # Onglet Contexte : infos hardware + réglages actuels
 # ---------------------------------------------------------------------------
 
+_FLIGHT_TYPE_COLOR = {
+    "Freestyle":            '#27ae60',
+    "Vol mixte":            '#f39c12',
+    "Stationnaire / Hover": '#3498db',
+}
+_FLIGHT_TYPE_ICON = {
+    "Freestyle":            "🟢",
+    "Vol mixte":            "🟡",
+    "Stationnaire / Hover": "🔵",
+}
+
+
 class ContextTab(QWidget):
-    def __init__(self, cfg: FlightConfig, drone_size: str):
+    def __init__(self, cfg: FlightConfig, drone_size: str,
+                 flight_type: FlightTypeResult | None = None):
         super().__init__()
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -148,6 +162,36 @@ class ContextTab(QWidget):
         layout = QVBoxLayout(inner)
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(10)
+
+        # --- Type de vol détecté ---
+        if flight_type is not None:
+            ft_box = QGroupBox("Type de vol détecté")
+            ft_box.setStyleSheet(
+                "QGroupBox { color: #aaa; border: 1px solid #333; "
+                "border-radius:4px; margin-top:8px; padding:8px; }"
+                "QGroupBox::title { subcontrol-origin: margin; left:8px; }"
+            )
+            ft_layout = QVBoxLayout(ft_box)
+            ft_layout.setSpacing(4)
+
+            color = _FLIGHT_TYPE_COLOR.get(flight_type.label, '#e0e0e0')
+            icon  = _FLIGHT_TYPE_ICON.get(flight_type.label, '⬜')
+            ft_layout.addWidget(_label(
+                f"{icon}  {flight_type.label.upper()}",
+                bold=True, color=color, size=14
+            ))
+            ft_layout.addWidget(_label(
+                f"Confiance : {flight_type.confidence * 100:.0f}%   "
+                f"(score : {flight_type.score}/9)",
+                color='#aaa', size=10
+            ))
+            ft_layout.addWidget(_label(
+                f"Setpoint max : {flight_type.max_setpoint_dps:.0f}°/s   •   "
+                f"Taux haute cadence : {flight_type.time_high_rate_pct * 100:.1f}%   •   "
+                f"Amplitude throttle : {flight_type.throttle_p2p * 100:.0f}%",
+                color='#888', size=10
+            ))
+            layout.addWidget(ft_box)
 
         # --- Hardware ---
         hw = QGroupBox("Hardware")
@@ -689,13 +733,14 @@ class CliDumpTab(QWidget):
 
 class DiagnosticWidget(QWidget):
     def __init__(self, cfg: FlightConfig, report: DiagnosticReport,
-                 drone_size: str):
+                 drone_size: str,
+                 flight_type: FlightTypeResult | None = None):
         super().__init__()
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
         tabs = QTabWidget()
-        tabs.addTab(ContextTab(cfg, drone_size),         "📋  Contexte")
+        tabs.addTab(ContextTab(cfg, drone_size, flight_type), "📋  Contexte")
         tabs.addTab(RecommendationsTab(report),          "🔍  Diagnostic")
         tabs.addTab(CliDumpTab(report),                  "💻  CLI Dump")
 

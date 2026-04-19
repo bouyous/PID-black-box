@@ -78,6 +78,17 @@ class AxisAnalysis:
 
 
 @dataclass
+class FlightTypeResult:
+    label: str                   # "Freestyle", "Vol mixte", "Stationnaire / Hover"
+    confidence: float            # 0.0–1.0
+    score: int                   # score brut (0–9)
+    max_setpoint_dps: float      # max |setpoint| roll/pitch en vol
+    time_high_rate_pct: float    # % du temps à |sp| > 300 deg/s
+    throttle_p2p: float          # amplitude throttle normalisée 0–1
+    sp_std: float                # écart-type setpoint roll/pitch
+
+
+@dataclass
 class SessionAnalysis:
     axes: list[AxisAnalysis] = field(default_factory=list)
     sample_rate_hz: float = 0.0
@@ -89,6 +100,7 @@ class SessionAnalysis:
     throttle_avg: float = 0.0        # moyenne de la manette en vol (0-1)
     throttle_p2p: float = 0.0        # variation crête-crête (jerk)
     warnings: list[str] = field(default_factory=list)
+    flight_type: FlightTypeResult | None = None
 
 
 def analyze(df: pd.DataFrame, cfg: FlightConfig) -> SessionAnalysis:
@@ -136,8 +148,82 @@ def analyze(df: pd.DataFrame, cfg: FlightConfig) -> SessionAnalysis:
                            result.avg_motor_hz)
 
     result.axes[0].motor_imbalance = _motor_imbalance(df, fly_mask)
+    result.flight_type = detect_flight_type(df, fly_mask)
 
     return result
+
+
+def detect_flight_type(df: pd.DataFrame, fly_mask: np.ndarray) -> FlightTypeResult:
+    """Détermine si le vol est Freestyle, mixte ou Stationnaire/Hover.
+
+    Basé sur le setpoint max, la proportion de temps à haute cadence,
+    la variation du throttle et l'écart-type des setpoints.
+    """
+    max_sp = 0.0
+    sp_std = 0.0
+    time_high_rate_pct = 0.0
+
+    for axis in range(2):  # roll et pitch (yaw moins discriminant)
+        col = f'setpoint[{axis}]'
+        if col in df.columns:
+            sp = df[col].to_numpy(dtype=np.float64)[fly_mask]
+            if len(sp):
+                max_sp = max(max_sp, float(np.max(np.abs(sp))))
+                sp_std = max(sp_std, float(np.std(sp)))
+                time_high_rate_pct = max(time_high_rate_pct,
+                                         float(np.mean(np.abs(sp) > 300)))
+
+    throttle_p2p = 0.0
+    if 'rcCommand[3]' in df.columns:
+        thr = df['rcCommand[3]'].to_numpy(dtype=np.float64)[fly_mask]
+        if len(thr) > 10:
+            throttle_p2p = float(
+                (np.percentile(thr, 95) - np.percentile(thr, 5)) / 1000.0
+            )
+
+    score = 0
+    if max_sp > 500:
+        score += 3
+    elif max_sp > 350:
+        score += 2
+    elif max_sp > 200:
+        score += 1
+
+    if time_high_rate_pct > 0.08:
+        score += 2
+    elif time_high_rate_pct > 0.03:
+        score += 1
+
+    if throttle_p2p > 0.55:
+        score += 2
+    elif throttle_p2p > 0.35:
+        score += 1
+
+    if sp_std > 150:
+        score += 2
+    elif sp_std > 80:
+        score += 1
+
+    max_score = 9
+    if score >= 6:
+        label = "Freestyle"
+        confidence = min(1.0, score / max_score)
+    elif score >= 3:
+        label = "Vol mixte"
+        confidence = 0.5 + abs(score - 4.5) / max_score
+    else:
+        label = "Stationnaire / Hover"
+        confidence = min(1.0, (max_score - score) / max_score)
+
+    return FlightTypeResult(
+        label=label,
+        confidence=confidence,
+        score=score,
+        max_setpoint_dps=max_sp,
+        time_high_rate_pct=time_high_rate_pct,
+        throttle_p2p=throttle_p2p,
+        sp_std=sp_std,
+    )
 
 
 def _analyze_axis(df: pd.DataFrame, cfg: FlightConfig, axis: int,
