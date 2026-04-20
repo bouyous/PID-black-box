@@ -1,0 +1,75 @@
+name: Build macOS app
+
+# Se déclenche :
+#   - automatiquement quand tu pushes un tag vX.Y.Z
+#   - manuellement depuis l'onglet Actions de GitHub
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+
+jobs:
+  build-mac:
+    # macos-latest = Apple Silicon (M1/M2), gratuit sur repo public
+    runs-on: macos-latest
+
+    permissions:
+      contents: write   # pour attacher l'artefact à la Release
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      # Compile blackbox_decode pour macOS depuis les sources officielles.
+      # C'est un petit outil en C, compile en < 30 s avec make.
+      - name: Build blackbox_decode (macOS native)
+        run: |
+          set -e
+          git clone --depth 1 https://github.com/betaflight/blackbox-tools.git /tmp/bbtools
+          cd /tmp/bbtools
+          make blackbox_decode
+          mkdir -p "$GITHUB_WORKSPACE/tools"
+          cp obj/blackbox_decode "$GITHUB_WORKSPACE/tools/blackbox_decode"
+          chmod +x "$GITHUB_WORKSPACE/tools/blackbox_decode"
+          "$GITHUB_WORKSPACE/tools/blackbox_decode" --help | head -3 || true
+
+      - name: Build .app with PyInstaller
+        run: |
+          python build_exe.py
+
+      - name: Package .app as .zip
+        run: |
+          cd dist
+          # Si on a un .app (bundle), on zippe. Sinon on zippe le binaire seul.
+          if [ -d "BlackBoxAnalyzer.app" ]; then
+            zip -ry BlackBoxAnalyzer-macOS.zip BlackBoxAnalyzer.app
+          else
+            zip -j BlackBoxAnalyzer-macOS.zip BlackBoxAnalyzer
+          fi
+          ls -la
+
+      - name: Upload artifact (pour build manuel)
+        uses: actions/upload-artifact@v4
+        with:
+          name: BlackBoxAnalyzer-macOS
+          path: dist/BlackBoxAnalyzer-macOS.zip
+
+      # Si le workflow tourne suite à un push de tag → on attache à la Release
+      - name: Attach to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/BlackBoxAnalyzer-macOS.zip
+          fail_on_unmatched_files: true

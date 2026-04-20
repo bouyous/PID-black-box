@@ -34,27 +34,42 @@ def _strip_unit(name: str) -> str:
     return _UNIT_RE.sub('', name).strip()
 
 
+def _decoder_names() -> list[str]:
+    """Noms de binaire à chercher selon l'OS."""
+    if sys.platform.startswith('win'):
+        return ['blackbox_decode.exe']
+    # macOS / Linux : pas d'extension
+    return ['blackbox_decode']
+
+
 def find_decoder() -> Path | None:
-    """Cherche blackbox_decode.exe : bundle PyInstaller, tools/ du repo, puis PATH."""
-    candidates = []
+    """Cherche le binaire blackbox_decode (Windows .exe, macOS/Linux sans ext.)
+    dans : bundle PyInstaller, tools/ du repo, à côté de l'exe, puis PATH."""
+    names = _decoder_names()
+    roots: list[Path] = []
     # 1. Bundle PyInstaller (--onefile extrait dans sys._MEIPASS)
     meipass = getattr(sys, '_MEIPASS', None)
     if meipass:
-        candidates.append(Path(meipass) / 'tools' / 'blackbox_decode.exe')
-        candidates.append(Path(meipass) / 'blackbox_decode.exe')
-    # 2. À côté de l'exe (si onedir ou si placé manuellement à côté)
+        roots.append(Path(meipass) / 'tools')
+        roots.append(Path(meipass))
+    # 2. À côté de l'exe (.app/Contents/MacOS, onedir, etc.)
     exe_dir = Path(sys.executable).resolve().parent
-    candidates.append(exe_dir / 'tools' / 'blackbox_decode.exe')
-    candidates.append(exe_dir / 'blackbox_decode.exe')
+    roots.append(exe_dir / 'tools')
+    roots.append(exe_dir)
     # 3. Repo dev : tools/ à la racine
-    candidates.append(Path(__file__).resolve().parent.parent.parent / 'tools' / 'blackbox_decode.exe')
+    roots.append(Path(__file__).resolve().parent.parent.parent / 'tools')
 
-    for c in candidates:
-        if c.exists():
-            return c
+    for root in roots:
+        for name in names:
+            c = root / name
+            if c.exists():
+                return c
 
-    found = shutil.which('blackbox_decode') or shutil.which('blackbox_decode.exe')
-    return Path(found) if found else None
+    for name in names + ['blackbox_decode']:
+        found = shutil.which(name)
+        if found:
+            return Path(found)
+    return None
 
 
 class BlackboxParser:
