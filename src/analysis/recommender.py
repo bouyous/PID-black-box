@@ -522,6 +522,7 @@ def generate_report(session: SessionAnalysis, cfg: FlightConfig,
 
     _check_vibrations(session, cfg, report, flying_style)
     _check_filters_global(session, cfg, report, style, profile, session)
+    _check_betaflight_extras(session, cfg, report, style, flying_style)
     _enforce_signature(cfg, report, style, profile, feel or FlightFeel.neutral())
 
     # Motor imbalance
@@ -986,6 +987,95 @@ def _recommend_filters(peaks: list[tuple[str, float, float]],
                 f"set dyn_notch_max_hz = {max_f}",
                 f"set dyn_notch_q = 250",
             ]
+
+
+def _check_betaflight_extras(session: SessionAnalysis, cfg: FlightConfig,
+                             report: DiagnosticReport, style: dict,
+                             flying_style: str):
+    """Vérifications supplémentaires issues de la KB DeerFlow v2 :
+    iterm_relax_cutoff, ff_smooth_factor/spike_limit, dshot_idle_value,
+    anti_gravity_gain, warnings hardware (grommets, BEC, condensateur)."""
+
+    # --- 1. iterm_relax_cutoff : si prop wash marqué et cutoff bas ---
+    # Recommandation KB : passer de 15 à 20-25 pour récupérer plus vite après rotation.
+    worst_pw = max((aa.propwash_score for aa in session.axes[:2]), default=0)
+    if (worst_pw > style['propwash_target'] * 1.2
+            and cfg.iterm_relax_cutoff > 0 and cfg.iterm_relax_cutoff < 20):
+        new_cut = 20 if flying_style != 'Racing' else 22
+        report.filter_recommendations.append(
+            f"set iterm_relax_cutoff = {new_cut}    "
+            f"# était {cfg.iterm_relax_cutoff} — prop wash score {worst_pw:.2f} > "
+            f"{style['propwash_target']:.2f} : I-term reprend plus vite en sortie de virage"
+        )
+
+    # --- 2. FF sursauteur : proposer lissage AVANT de baisser FF ---
+    # Si un axe montre overshoot modéré + lag faible ET ff_smooth_factor par défaut (25)
+    for aa in session.axes[:2]:
+        if aa.step_count < 2:
+            continue
+        modest_overshoot = (style['overshoot_target'] * 1.2 < aa.avg_overshoot_pct
+                            < style['overshoot_critical'])
+        snappy_lag = aa.tracking_lag_ms < style['lag_target_ms'] * 0.8
+        if modest_overshoot and snappy_lag and cfg.ff_smooth_factor <= 30:
+            new_sm = 45
+            new_sp = max(cfg.ff_spike_limit, 65)
+            # On évite de dupliquer : une fois suffit
+            if not any('feedforward_smooth_factor' in l
+                       for l in report.filter_recommendations):
+                report.filter_recommendations.append(
+                    f"set feedforward_smooth_factor = {new_sm}    "
+                    f"# était {cfg.ff_smooth_factor} — overshoot {aa.avg_overshoot_pct:.0f}% "
+                    f"avec lag faible : on lisse FF au lieu de le baisser"
+                )
+                if new_sp != cfg.ff_spike_limit:
+                    report.filter_recommendations.append(
+                        f"set feedforward_spike_limit = {new_sp}    "
+                        f"# était {cfg.ff_spike_limit} — complément au smooth_factor"
+                    )
+            break
+
+    # --- 3. dshot_idle_value : plus de 5.5 % inutile (échelle 0-10000 = 0.1 %) ---
+    if cfg.dshot_idle_value > 600:
+        new_idle = 550
+        report.filter_recommendations.append(
+            f"set dshot_idle_value = {new_idle}    "
+            f"# était {cfg.dshot_idle_value} ({cfg.dshot_idle_value/100:.1f} %) "
+            f"— 4.5-5.5 % suffit, au-delà les moteurs chauffent à l'arrêt (KB)"
+        )
+
+    # --- 4. anti_gravity_gain : si très élevé et drone non racing ---
+    if cfg.anti_gravity_gain > 100 and flying_style in ('Freestyle', 'Long Range'):
+        new_ag = 80
+        report.filter_recommendations.append(
+            f"set anti_gravity_gain = {new_ag}    "
+            f"# était {cfg.anti_gravity_gain} — instabilité probable sur throttle pumps "
+            f"(60-80 est la norme {flying_style})"
+        )
+
+    # --- 5. Warnings hardware (tirés de la KB) ---
+    # Bruit HF persistant → évoquer grommets / BEC / condensateur
+    hf_vals = [aa.hf_noise_ratio for aa in session.axes[:2] if aa.hf_noise_ratio > 0]
+    if hf_vals and max(hf_vals) > style['hf_noise_critical'] * 1.2:
+        durometer = "30A" if report.drone_size in ('3"', '5"') else "20A"
+        report.warnings.append(
+            f"Bruit HF élevé persistant. Pistes hardware (KB) : "
+            f"(a) grommets FC {durometer} adaptés à la masse du drone, "
+            f"(b) condensateur 1000-2200 µF 35 V sur les pads batterie "
+            f"pour couper le bruit ESC, (c) BEC/régulateur FC faible "
+            f"(reboot en vol ? sag vidéo ?)."
+        )
+
+    # Tous les axes lents + FF déjà haut + filtres serrés → signaler latence filtre
+    if all(aa.avg_rise_time_ms > style['rise_target_ms'] for aa in session.axes[:2]
+           if aa.step_count >= 2):
+        cur_dterm = cfg.dterm_lpf1_dyn_max_hz or cfg.dterm_lpf1_hz
+        if cur_dterm > 0 and cur_dterm < 140 and all(
+                cfg.pid_f[ax] > 100 for ax in (0, 1)):
+            report.warnings.append(
+                "Réponse lente sur tous les axes malgré un FF haut : "
+                "filtres probablement trop serrés (latence filtre). "
+                "Envisagez d'ouvrir dterm_lpf1_dyn_max_hz de +10-15 %."
+            )
 
 
 def _enforce_signature(cfg: FlightConfig, report: DiagnosticReport,

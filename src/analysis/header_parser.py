@@ -56,6 +56,12 @@ class FlightConfig:
     ff_boost: int = 0
     ff_smooth_factor: int = 25
     ff_jitter_factor: int = 7
+    ff_spike_limit: int = 55
+
+    # I-term relax + dshot idle (DeerFlow KB v2)
+    iterm_relax_type: str = ""
+    iterm_relax_cutoff: int = 15
+    dshot_idle_value: int = 550   # échelle 0-10000 (0.1 %), défaut BF 5.5 %
 
     # Divers
     tpa_rate: int = 65
@@ -190,6 +196,12 @@ def parse_header(bbl_path: str | Path) -> FlightConfig:
     cfg.ff_boost        = get_int('feedforward_boost', 15)
     cfg.ff_smooth_factor = get_int('feedforward_smooth_factor', 25)
     cfg.ff_jitter_factor = get_int('feedforward_jitter_factor', 7)
+    cfg.ff_spike_limit   = get_int('feedforward_spike_limit', 55)
+
+    # I-term relax + DShot idle (DeerFlow KB v2)
+    cfg.iterm_relax_type   = get('iterm_relax_type')
+    cfg.iterm_relax_cutoff = get_int('iterm_relax_cutoff', 15)
+    cfg.dshot_idle_value   = get_int('dshot_idle_value', 550)
 
     # Divers
     cfg.tpa_rate        = get_int('tpa_rate', 65)
