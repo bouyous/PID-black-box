@@ -139,26 +139,29 @@ DRONE_PROFILES = {
     # → dterm_lpf_min abaissé pour 7"+.
     # 2.5" Ciné Whoop : frame plastique, hélices carénées → vibrations élevées,
     # P et D bas, filtrage maximal, tolérance aux changements plus grande.
-    '2.5"': dict(max_delta_pct=50, p_range=(18, 48), d_range=(15, 38),
+    # max_delta_pct élargi (avril 2026) : l'ancienne échelle (25% sur 5")
+    # exigeait ~25 BBL pour converger. On donne au solveur plus d'amplitude,
+    # le logiciel se plafonne seul si la preuve est faible.
+    '2.5"': dict(max_delta_pct=55, p_range=(18, 48), d_range=(15, 38),
                  i_range=(50, 160), f_range=(50, 160), d_min_ratio_floor=0.35,
                  dterm_lpf_min_target=80, dterm_lpf_max_target=140),
-    '3"':  dict(max_delta_pct=45, p_range=(25, 60), d_range=(18, 42),
+    '3"':  dict(max_delta_pct=50, p_range=(25, 60), d_range=(18, 42),
                 i_range=(60, 180), f_range=(60, 180), d_min_ratio_floor=0.40,
                 dterm_lpf_min_target=90, dterm_lpf_max_target=160),
     # 5" = référence
-    '5"':  dict(max_delta_pct=25, p_range=(38, 78), d_range=(26, 56),
+    '5"':  dict(max_delta_pct=35, p_range=(38, 78), d_range=(26, 56),
                 i_range=(70, 180), f_range=(80, 200), d_min_ratio_floor=0.45,
                 dterm_lpf_min_target=90, dterm_lpf_max_target=170),
     # 6" : quasi identique à un 5", juste P/D un peu plus hauts selon config
-    '6"':  dict(max_delta_pct=30, p_range=(38, 82), d_range=(28, 58),
+    '6"':  dict(max_delta_pct=40, p_range=(38, 82), d_range=(28, 58),
                 i_range=(70, 175), f_range=(80, 200), d_min_ratio_floor=0.45,
                 dterm_lpf_min_target=85, dterm_lpf_max_target=160),
     # 7" : moins de P, moins de I, plus de D. Résonances basses → LPF serré bas.
-    '7"':  dict(max_delta_pct=45, p_range=(32, 70), d_range=(32, 65),
+    '7"':  dict(max_delta_pct=55, p_range=(32, 70), d_range=(32, 65),
                 i_range=(60, 160), f_range=(80, 200), d_min_ratio_floor=0.50,
                 dterm_lpf_min_target=75, dterm_lpf_max_target=120),
     # 10" : encore plus radical côté P/I bas, D haut, filtres très serrés.
-    '10"': dict(max_delta_pct=55, p_range=(22, 55), d_range=(30, 60),
+    '10"': dict(max_delta_pct=65, p_range=(22, 55), d_range=(30, 60),
                 i_range=(50, 140), f_range=(60, 180), d_min_ratio_floor=0.45,
                 dterm_lpf_min_target=60, dterm_lpf_max_target=100),
 }
@@ -523,6 +526,8 @@ def generate_report(session: SessionAnalysis, cfg: FlightConfig,
     _check_vibrations(session, cfg, report, flying_style)
     _check_filters_global(session, cfg, report, style, profile, session)
     _check_betaflight_extras(session, cfg, report, style, flying_style)
+    _check_cpu_and_bbl(cfg, report)
+    _check_esc_bluejay(session, cfg, report, flying_style)
     _enforce_signature(cfg, report, style, profile, feel or FlightFeel.neutral())
 
     # Motor imbalance
@@ -1176,6 +1181,142 @@ def _enforce_signature(cfg: FlightConfig, report: DiagnosticReport,
                     reason=(f"{why} — style {report.flying_style} "
                             f"+ stabilité vent (×{i_mult:.2f})")
                 ))
+
+
+# ---------------------------------------------------------------------------
+# CPU / Blackbox logging awareness (BF 4.5+)
+# ---------------------------------------------------------------------------
+# Capacité PID_loop max réaliste avec RPM filter ON + dyn_notch=3 + BBL actif.
+# Source : connaissances consolidées BF 4.5/4.6 (Oscar Liang, Chris Rosser).
+FC_CPU_LIMITS = {
+    'F411': dict(pid_loop_max=4000, bbl_max=1000, cpu_budget=40, dp_fpu=False),
+    'F405': dict(pid_loop_max=4000, bbl_max=2000, cpu_budget=35, dp_fpu=False),
+    'F722': dict(pid_loop_max=8000, bbl_max=2000, cpu_budget=30, dp_fpu=False),
+    'F745': dict(pid_loop_max=8000, bbl_max=4000, cpu_budget=25, dp_fpu=False),
+    'H743': dict(pid_loop_max=8000, bbl_max=4000, cpu_budget=20, dp_fpu=True),
+    'H750': dict(pid_loop_max=8000, bbl_max=4000, cpu_budget=20, dp_fpu=True),
+}
+
+
+def _check_cpu_and_bbl(cfg: FlightConfig, report: DiagnosticReport) -> None:
+    """Avertit si combo FC / PID loop / BBL rate est à risque, et
+    recommande le bon réglage BBL."""
+    # PID loop réel (Hz) : looptime_us = 1e6 / gyro_sample_rate, puis
+    # pid_process_denom divise. BBL divise encore par 2^blackbox_sample_rate_div.
+    if cfg.looptime_us <= 0:
+        return
+    gyro_rate = int(round(1_000_000 / cfg.looptime_us))
+    pid_rate  = gyro_rate // max(1, cfg.pid_process_denom)
+    bbl_div   = max(0, cfg.blackbox_sample_rate_div)
+    bbl_rate  = pid_rate // (2 ** bbl_div) if bbl_div >= 0 else pid_rate
+
+    fam = cfg.fc_chip_family
+    limits = FC_CPU_LIMITS.get(fam)
+
+    # Ligne d'info sur la configuration détectée
+    fam_disp = fam if fam != 'UNKNOWN' else 'FC inconnu'
+    report.summary.append(
+        f"🧩 {fam_disp} — PID {pid_rate} Hz, Blackbox {bbl_rate} Hz "
+        f"(denom={cfg.pid_process_denom}, bbl_div={bbl_div})"
+    )
+
+    # Règles CPU
+    if limits:
+        if pid_rate > limits['pid_loop_max']:
+            report.warnings.append(
+                f"⚠️ {fam} sous-dimensionné pour PID {pid_rate} Hz "
+                f"(max recommandé {limits['pid_loop_max']} Hz avec RPM filter + dyn_notch). "
+                f"Réduire pid_process_denom ou passer sur chip H7."
+            )
+        if bbl_rate > limits['bbl_max']:
+            report.warnings.append(
+                f"⚠️ Blackbox à {bbl_rate} Hz dépasse la capacité {fam} "
+                f"(max sûr {limits['bbl_max']} Hz). Augmenter blackbox_sample_rate "
+                f"(diviseur plus grand) pour éviter les frames perdues."
+            )
+        if fam in ('H743', 'H750') and pid_rate <= 4000:
+            report.filter_recommendations.append(
+                f"💡 {fam} sous-utilisé : PID loop à {pid_rate} Hz alors que "
+                f"le chip peut tenir 8 kHz confortablement. Option : passer "
+                f"pid_process_denom à 1 si gyro_sample_rate le permet."
+            )
+    elif fam == 'UNKNOWN':
+        report.warnings.append(
+            "ℹ️ Chip FC non identifié dans l'en-tête BBL — "
+            "impossible d'évaluer la charge CPU vs filtres."
+        )
+
+    # Qualité du logging BBL pour l'analyse de tune
+    if bbl_rate > 0 and bbl_rate < 1000:
+        report.warnings.append(
+            f"⚠️ Blackbox à {bbl_rate} Hz < 1 kHz : Nyquist insuffisant pour "
+            f"analyser les résonances > 500 Hz. Idéal = 2 kHz."
+        )
+    elif bbl_rate > 0 and bbl_rate < 2000:
+        report.filter_recommendations.append(
+            f"ℹ️ BBL à {bbl_rate} Hz — OK, mais 2 kHz est le sweet spot "
+            f"pour voir correctement les raies moteur / dyn_notch."
+        )
+
+    # Champs BBL critiques pour l'analyse
+    missing = []
+    if cfg.blackbox_disable_gyro:     missing.append("gyro")
+    if cfg.blackbox_disable_pids:     missing.append("PIDs")
+    if cfg.blackbox_disable_rc:       missing.append("RC")
+    if cfg.blackbox_disable_setpoint: missing.append("setpoint")
+    if cfg.blackbox_disable_motors:   missing.append("motors")
+    if cfg.blackbox_disable_debug:    missing.append("debug")
+    if missing:
+        report.warnings.append(
+            "⚠️ Champs BBL désactivés et nécessaires à l'analyse : "
+            + ", ".join(missing)
+            + ". Réactiver via `set blackbox_disable_{champ} = OFF`."
+        )
+
+    # debug_mode utile pour analyser RPM filter / dyn_notch / D-term
+    if cfg.debug_mode in (0, None):
+        report.filter_recommendations.append(
+            "💡 `debug_mode` désactivé : pour le prochain log, activer "
+            "RPM_FILTER ou DYN_NOTCH (un seul à la fois) pour voir l'efficacité "
+            "des filtres dans la BBL."
+        )
+
+
+# ---------------------------------------------------------------------------
+# Bluejay / BLHeli_32 — recommandations ESC (info pilote, pas d'auto-apply)
+# ---------------------------------------------------------------------------
+def _check_esc_bluejay(session: SessionAnalysis, cfg: FlightConfig,
+                       report: DiagnosticReport, flying_style: str) -> None:
+    """Recommandations ESC que l'utilisateur appliquera manuellement
+    via Configurator/Bluejay. On se base sur ce qu'on peut lire du BBL
+    et sur les règles de Bluejay v0.19+."""
+    # RPM filter actif mais bidir DShot OFF → contradiction
+    if cfg.rpm_filter_harmonics > 0 and not cfg.dshot_bidir:
+        report.warnings.append(
+            "⚠️ RPM filter actif mais dshot_bidir=OFF → le FC ne reçoit "
+            "pas l'eRPM, le filtre est inopérant. Activer bidir DShot "
+            "(Bluejay ≥ 0.19 ou BLHeli_32) puis re-logger."
+        )
+
+    # Déséquilibre moteur élevé : on donne le protocole Bluejay
+    imb = session.axes[0].motor_imbalance if session.axes else 0
+    if imb > 60:
+        report.filter_recommendations.append(
+            "🔧 ESC (Bluejay recommandé) — déséquilibre moteur détecté : "
+            "vérifier Demag=High, Motor Timing=Auto/Medium (éviter High), "
+            "Startup Power 1.00–1.25, RPM Protect=ON, Variable PWM=ON."
+        )
+
+    # Conseils par style — informatifs
+    style_hint = {
+        'Freestyle':   "Bluejay : Timing=Auto, PWM 48 kHz, Demag=High, RPM Protect=ON.",
+        'Racing':      "Bluejay : Timing=Medium-High, PWM 48 kHz, Demag=High, Startup Power 1.00.",
+        'Long Range':  "Bluejay : Timing=Low, PWM 24 kHz (silence + efficience), Demag=High.",
+        'Cinewhoop':   "Bluejay : Timing=Low-Medium, PWM 24 kHz, Startup Power 1.25–1.50, Brake on Stop possible.",
+        'Bangers':     "Bluejay : Timing=Auto, PWM 48 kHz, Startup Power 1.25, RPM Protect=ON.",
+    }
+    if flying_style in style_hint:
+        report.filter_recommendations.append("💡 " + style_hint[flying_style])
 
 
 def _clamp_change(current: int, delta_ratio: float,

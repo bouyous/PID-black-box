@@ -50,6 +50,21 @@ class FlightConfig:
     motor_poles: int = 14
     dshot_bidir: bool = False
     gyro_scale_raw: str = ""
+    # Détection chip FC + logging BBL (avril 2026)
+    fc_target: str = ""
+    fc_mcu: str = ""
+    fc_chip_family: str = "UNKNOWN"   # F405 / F411 / F722 / F745 / H743 / H750
+    pid_process_denom: int = 1
+    blackbox_sample_rate_div: int = 1  # 1/(2^N)
+    blackbox_mode: str = ""
+    blackbox_disable_acc: bool = False
+    blackbox_disable_debug: bool = False
+    blackbox_disable_motors: bool = False
+    blackbox_disable_rc: bool = False
+    blackbox_disable_setpoint: bool = False
+    blackbox_disable_gyro: bool = False
+    blackbox_disable_pids: bool = False
+    blackbox_disable_battery: bool = False
 
     # Feed-forward
     ff_weight: list[int] = field(default_factory=lambda: [0, 0, 0])
@@ -190,6 +205,35 @@ def parse_header(bbl_path: str | Path) -> FlightConfig:
     cfg.motor_poles   = get_int('motor_poles', 14)
     cfg.dshot_bidir   = get('dshot_bidir') == '1'
     cfg.gyro_scale_raw = get('gyro_scale')
+
+    # Détection chip FC (STM32F405/F411/F722/F745/H743/H750)
+    cfg.fc_target = get('Firmware target')
+    cfg.fc_mcu    = get('MCU') or get('mcu')
+    _chip_keys = {
+        'STM32F40': 'F405', 'STM32F411': 'F411',
+        'STM32F7X2': 'F722', 'STM32F722': 'F722',
+        'STM32F745': 'F745', 'STM32F7X5': 'F745',
+        'STM32H743': 'H743', 'STM32H750': 'H750', 'STM32H7': 'H743',
+    }
+    _search = (cfg.fc_mcu + ' ' + cfg.fc_target + ' ' + cfg.board).upper()
+    cfg.fc_chip_family = 'UNKNOWN'
+    for k, fam in _chip_keys.items():
+        if k in _search:
+            cfg.fc_chip_family = fam
+            break
+
+    # BBL logging
+    cfg.pid_process_denom       = get_int('pid_process_denom', 1)
+    cfg.blackbox_sample_rate_div = get_int('blackbox_sample_rate', 1)
+    cfg.blackbox_mode           = get('blackbox_mode')
+    cfg.blackbox_disable_acc      = get('blackbox_disable_acc') == '1'
+    cfg.blackbox_disable_debug    = get('blackbox_disable_debug') == '1'
+    cfg.blackbox_disable_motors   = get('blackbox_disable_motors') == '1'
+    cfg.blackbox_disable_rc       = get('blackbox_disable_rc') == '1'
+    cfg.blackbox_disable_setpoint = get('blackbox_disable_setpoint') == '1'
+    cfg.blackbox_disable_gyro     = get('blackbox_disable_gyro') == '1'
+    cfg.blackbox_disable_pids     = get('blackbox_disable_pids') == '1'
+    cfg.blackbox_disable_battery  = get('blackbox_disable_battery') == '1'
 
     # Feed-forward
     cfg.ff_weight       = get_int_list('ff_weight')
