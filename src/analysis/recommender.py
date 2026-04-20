@@ -157,13 +157,19 @@ DRONE_PROFILES = {
                 i_range=(70, 175), f_range=(80, 200), d_min_ratio_floor=0.45,
                 dterm_lpf_min_target=85, dterm_lpf_max_target=160),
     # 7" : moins de P, moins de I, plus de D. Résonances basses → LPF serré bas.
+    # I abaissé (retour pilotes : I trop haut déclenche des vibrations basse freq
+    # sur 7" du fait de l'inertie de la pale).
     '7"':  dict(max_delta_pct=55, p_range=(32, 70), d_range=(32, 65),
-                i_range=(60, 160), f_range=(80, 200), d_min_ratio_floor=0.50,
-                dterm_lpf_min_target=75, dterm_lpf_max_target=120),
+                i_range=(50, 130), f_range=(80, 200), d_min_ratio_floor=0.50,
+                dterm_lpf_min_target=75, dterm_lpf_max_target=120,
+                i_bias='low'),
     # 10" : encore plus radical côté P/I bas, D haut, filtres très serrés.
+    # I plafonné plus bas (retour pilote : sur 10" l'I excessif cause
+    # des vibrations persistantes après commande).
     '10"': dict(max_delta_pct=65, p_range=(22, 55), d_range=(30, 60),
-                i_range=(50, 140), f_range=(60, 180), d_min_ratio_floor=0.45,
-                dterm_lpf_min_target=60, dterm_lpf_max_target=100),
+                i_range=(40, 110), f_range=(60, 180), d_min_ratio_floor=0.45,
+                dterm_lpf_min_target=60, dterm_lpf_max_target=100,
+                i_bias='low'),
 }
 DEFAULT_PROFILE = DRONE_PROFILES['5"']
 
@@ -528,6 +534,7 @@ def generate_report(session: SessionAnalysis, cfg: FlightConfig,
     _check_betaflight_extras(session, cfg, report, style, flying_style)
     _check_cpu_and_bbl(cfg, report)
     _check_esc_bluejay(session, cfg, report, flying_style)
+    _check_electrical(session, cfg, report, style)
     _enforce_signature(cfg, report, style, profile, feel or FlightFeel.neutral())
 
     # Motor imbalance
@@ -603,11 +610,16 @@ def _check_axis(aa: AxisAnalysis, cfg: FlightConfig, report: DiagnosticReport,
             # déjà traité plus haut
             pass
         else:
-            # Remonter I (typique : oscillation gauche/droite en ligne droite)
+            # Remonter I (typique : oscillation gauche/droite en ligne droite).
+            # Sur les gros drones (7"/10", i_bias='low'), on boost moins fort
+            # car les retours pilotes montrent qu'un I trop haut génère des
+            # vibrations basse fréquence persistantes.
             if i_cur > 0:
                 boost = min(0.15, over * 0.5)
                 if sev == Severity.WARNING:
                     boost = max(boost, 0.10)
+                if profile.get('i_bias') == 'low':
+                    boost *= 0.5   # demi-dose sur 7"/10"
                 i_new = _clamp_change(i_cur, +boost, max_delta, i_range)
                 if i_new != i_cur:
                     report.recommendations.append(Recommendation(
@@ -1160,9 +1172,14 @@ def _enforce_signature(cfg: FlightConfig, report: DiagnosticReport,
     # --- 3. Signature I : idem, proportionnelle au feel ---
     i_high = style.get('prefer_high_i')
     wind_d = feel.wind_stability - 3
-    if i_high or wind_d != 0:
+    i_low_bias = profile.get('i_bias') == 'low'  # 7" / 10"
+    if i_high or wind_d != 0 or i_low_bias:
         i_mult = 1.12 if i_high else 1.0
         i_mult *= 1 + wind_d * 0.05
+        if i_low_bias:
+            # Gros drones : on tire légèrement vers le bas (−8 %),
+            # retour pilote : trop d'I → vibrations persistantes
+            i_mult *= 0.92
         for ax in (0, 1):
             i = cfg.pid_i[ax]
             if i <= 0:
@@ -1279,6 +1296,76 @@ def _check_cpu_and_bbl(cfg: FlightConfig, report: DiagnosticReport) -> None:
             "💡 `debug_mode` désactivé : pour le prochain log, activer "
             "RPM_FILTER ou DYN_NOTCH (un seul à la fois) pour voir l'efficacité "
             "des filtres dans la BBL."
+        )
+
+
+# ---------------------------------------------------------------------------
+# Électrique : batterie, condensateur, BEC, interférences
+# ---------------------------------------------------------------------------
+# Basé sur la KB DeerFlow v2 (vecteur Électrique) : on ne fait PAS de
+# remplacement matériel automatique — on alerte quand la BBL montre des
+# symptômes électriques typiques, et on donne le protocole correctif.
+def _check_electrical(session: SessionAnalysis, cfg: FlightConfig,
+                      report: DiagnosticReport, style: dict) -> None:
+    # --- Sag batterie : > 0.35 V/cell = marginal, > 0.5 V/cell = dégradée
+    sag = session.battery_sag_v_per_cell
+    if session.cell_count > 0 and sag > 0.35:
+        sev = "⚠️" if sag > 0.5 else "ℹ️"
+        report.warnings.append(
+            f"{sev} Sag batterie {sag:.2f} V/cell ({session.cell_count}S, "
+            f"Vmin {session.battery_voltage_min:.1f} V). "
+            + ("Pack en fin de vie ou C-rating insuffisant — puissance moteur "
+               "instable garantie. Changer/upgrader le pack."
+               if sag > 0.5 else
+               "Pack proche de ses limites sur ce type de vol. "
+               "Surveiller à froid vs chaud.")
+        )
+
+    # --- Oscillation à fréquence fixe, indépendante du throttle :
+    #     VCC ripple typique → condensateur de découplage manquant/faible
+    dom_freqs = [a.dominant_freq_hz for a in session.axes if a.has_oscillation]
+    if dom_freqs:
+        # même fréquence sur ≥2 axes = signature VCC ripple
+        close = sum(1 for f in dom_freqs if abs(f - dom_freqs[0]) < 8)
+        if close >= 2 and 40 < dom_freqs[0] < 180:
+            report.warnings.append(
+                f"⚠️ Oscillation {dom_freqs[0]:.0f} Hz présente sur plusieurs axes. "
+                "Signature typique de bruit VCC (alimentation FC). "
+                "Vérifier le condensateur de découplage sur les pads batterie : "
+                "1000–2200 µF / 35 V recommandé. En ajouter un si absent."
+            )
+
+    # --- Bruit HF excessif sans D-term explosé : soupçon EMI / câblage
+    hf_excess = False
+    for aa in session.axes[:2]:
+        if aa.hf_noise_ratio > style.get('hf_noise_target', 0.06) * 1.8 and \
+           aa.noise_ratio < style.get('noise_critical', 3.8):
+            hf_excess = True
+            break
+    if hf_excess:
+        report.filter_recommendations.append(
+            "🔌 Bruit HF élevé sans explosion du D-term : envisager une source "
+            "électrique/EMI. Éloigner la FC des câbles de puissance, vérifier "
+            "les soudures ESC, ajouter un condensateur 1000 µF/35 V si absent."
+        )
+
+    # --- BEC sous-dimensionné : pas détectable directement depuis la BBL,
+    #     mais si le sag est élevé ET présence d'oscillations basse freq →
+    #     on suggère de vérifier aussi le BEC.
+    if sag > 0.45 and dom_freqs:
+        report.filter_recommendations.append(
+            "💡 Sag + oscillations basse fréquence : si la caméra FPV / VTX "
+            "coupe aux pics de throttle, le BEC 5V/9V est saturé. Ajouter un "
+            "BEC externe dédié (ex : Matek BEC) ou un condensateur 100 µF "
+            "sur le pad 5V de la FC."
+        )
+
+    # --- dshot_idle trop haut + oscillation < 60 Hz sur 1 axe → desync probable
+    if cfg.dshot_idle_value > 700 and dom_freqs and min(dom_freqs) < 60:
+        report.warnings.append(
+            f"⚠️ dshot_idle_value = {cfg.dshot_idle_value} et oscillation basse "
+            f"fréquence détectée. Risque de desync ESC à bas régime. "
+            "Réduire à 550 (5.5 %) et vérifier le timing ESC."
         )
 
 

@@ -92,23 +92,25 @@ class RecoCard(QFrame):
         super().__init__()
         color  = SEV_COLOR[reco.severity]
         bg     = SEV_BG[reco.severity]
+        # Encarts compactés (avril 2026) : padding/margin réduits pour montrer
+        # plus de réglages à l'écran sans scroller.
         self.setStyleSheet(f"""
             QFrame {{
                 background: {bg};
                 border-left: 3px solid {color};
                 border-radius: 3px;
-                padding: 4px;
-                margin: 2px 0;
+                padding: 2px;
+                margin: 1px 0;
             }}
         """)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 3, 8, 3)
-        layout.setSpacing(1)
+        layout.setContentsMargins(6, 1, 6, 1)
+        layout.setSpacing(0)
 
         axis_str = f" ({AXIS_NAME[reco.axis]})" if reco.axis >= 0 else ""
-        layout.addWidget(_label(reco.label + axis_str, bold=True, color=color, size=11))
-        layout.addWidget(_label(reco.reason, color='#aaa', size=10))
+        layout.addWidget(_label(reco.label + axis_str, bold=True, color=color, size=10))
+        layout.addWidget(_label(reco.reason, color='#aaa', size=9))
 
 
 class GenericCard(QFrame):
@@ -122,16 +124,16 @@ class GenericCard(QFrame):
                 background: {bg};
                 border-left: 3px solid {color};
                 border-radius: 3px;
-                padding: 4px;
-                margin: 2px 0;
+                padding: 2px;
+                margin: 1px 0;
             }}
         """)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 3, 8, 3)
-        layout.setSpacing(1)
-        layout.addWidget(_label(title, bold=True, color=color, size=11))
+        layout.setContentsMargins(6, 1, 6, 1)
+        layout.setSpacing(0)
+        layout.addWidget(_label(title, bold=True, color=color, size=10))
         if detail:
-            layout.addWidget(_label(detail, color='#aaa', size=10))
+            layout.addWidget(_label(detail, color='#aaa', size=9))
 
 
 # ---------------------------------------------------------------------------
@@ -314,8 +316,8 @@ def _build_reco_list_raw(report: DiagnosticReport) -> QWidget:
     """Construit la vue 'Valeurs brutes' : filtres en premier, puis PIDs."""
     inner = QWidget()
     layout = QVBoxLayout(inner)
-    layout.setContentsMargins(10, 10, 10, 10)
-    layout.setSpacing(4)
+    layout.setContentsMargins(8, 4, 8, 6)
+    layout.setSpacing(2)
 
     # ===== FILTRES EN PREMIER =====
     filter_cards: list[tuple[str, str]] = []
@@ -365,8 +367,8 @@ def _build_reco_list_sliders(report: DiagnosticReport) -> QWidget:
     """Vue Sliders : PID en sliders (0.00-2.00), filtres en raw."""
     inner = QWidget()
     layout = QVBoxLayout(inner)
-    layout.setContentsMargins(10, 10, 10, 10)
-    layout.setSpacing(4)
+    layout.setContentsMargins(8, 4, 8, 6)
+    layout.setSpacing(2)
 
     cfg = report._cfg
     if cfg is None:
@@ -526,28 +528,39 @@ class RecommendationsTab(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(4)
 
-        # Bouton retour à la procédure
+        # Bouton retour à la procédure (plus compact)
         back_row = QHBoxLayout()
-        back = QPushButton("← Relire la procédure de sécurité")
+        back_row.setContentsMargins(0, 0, 0, 0)
+        back = QPushButton("← Procédure de sécurité")
         back.setStyleSheet(
             "QPushButton { background:#2d2d2d; color:#ccc; border:1px solid #555;"
-            " padding:4px 10px; border-radius:4px; }"
+            " padding:2px 8px; border-radius:3px; font-size:10px; }"
             "QPushButton:hover { background:#3a3a3a; }"
         )
+        back.setMaximumHeight(22)
         back.clicked.connect(lambda: self.stack.setCurrentIndex(0))
         back_row.addWidget(back)
         back_row.addStretch()
         outer.addLayout(back_row)
 
+        # Header summary + warnings : compacté dans un scroll à hauteur limitée
+        # pour laisser la zone réglages remonter et prendre plus d'espace.
+        header_scroll = QScrollArea()
+        header_scroll.setWidgetResizable(True)
+        header_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        header_scroll.setMaximumHeight(110)   # plafond haut de la zone info
+        header_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
         header = QWidget()
         hlay = QVBoxLayout(header)
-        hlay.setContentsMargins(10, 4, 10, 2)
-        hlay.setSpacing(2)
+        hlay.setContentsMargins(8, 2, 8, 2)
+        hlay.setSpacing(1)
         for line in report.summary:
-            hlay.addWidget(_label(f"• {line}", color='#aaa', size=10))
+            hlay.addWidget(_label(f"• {line}", color='#aaa', size=9))
         for warn in report.warnings:
-            hlay.addWidget(_label(f"⚠️  {warn}", color='#f39c12', size=10))
-        outer.addWidget(header)
+            hlay.addWidget(_label(f"⚠️  {warn}", color='#f39c12', size=9))
+        header_scroll.setWidget(header)
+        outer.addWidget(header_scroll)
 
         sub = QTabWidget()
         sub.setStyleSheet("QTabBar::tab { padding: 4px 14px; }")

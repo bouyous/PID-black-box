@@ -94,6 +94,8 @@ class SessionAnalysis:
     sample_rate_hz: float = 0.0
     fly_duration_s: float = 0.0
     battery_voltage: float = 0.0
+    battery_voltage_min: float = 0.0   # tension minimale atteinte (sag pic)
+    battery_sag_v_per_cell: float = 0.0  # (max − min) / nb cells
     cell_count: int = 0
     avg_erpm: list[float] = field(default_factory=list)
     avg_motor_hz: float = 0.0
@@ -116,7 +118,12 @@ def analyze(df: pd.DataFrame, cfg: FlightConfig) -> SessionAnalysis:
         vbat = df['vbatLatest'].dropna()
         if len(vbat):
             result.battery_voltage = float(vbat.mean())
+            result.battery_voltage_min = float(vbat.min())
             result.cell_count = _guess_cell_count(result.battery_voltage)
+            if result.cell_count > 0:
+                result.battery_sag_v_per_cell = (
+                    float(vbat.max() - vbat.min()) / result.cell_count
+                )
 
     fly_mask = _fly_mask(df)
     result.fly_duration_s = float(fly_mask.sum()) / max(result.sample_rate_hz, 1)
