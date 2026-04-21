@@ -3,36 +3,35 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.so
+*.egg-info/
 .Python
-venv/
 env/
+venv/
 .venv/
+
+# PyInstaller
 build/
 dist/
-*.egg-info/
+*.spec
 
 # IDE
-.vscode/
 .idea/
+.vscode/
 *.swp
 
 # OS
-Thumbs.db
 .DS_Store
-
-# Fichiers blackbox de test — trop volumineux pour git
-samples/*.bbl
-samples/*.bfl
-samples/*.BBL
-samples/*.BFL
-samples/*.csv
-
-# Outils de décodage (binaires externes, non commités)
-tools/blackbox_decode.exe
-tools/blackbox_decode_mac
-tools/blackbox_decode_osx
-tools/blackbox_decode_linux
-tools/blackbox_decode
+Thumbs.db
 
 # Logs
 *.log
+
+# Outil de décodage (binaire externe, non commité dans git — bundlé dans l'exe)
+tools/blackbox_decode.exe
+
+# Fichiers blackbox de test — trop volumineux pour git
+samples/*.bbl
+samples/*.BBL
+samples/*.bfl
+samples/*.BFL
+samples/*.csv

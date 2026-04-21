@@ -66,3 +66,17 @@ blackbox-analyzer/
 - blackbox-tools (décodeur officiel C) : https://github.com/betaflight/blackbox-tools
 - Plasmatree PID-Analyzer (Python, inspiration) : https://github.com/Plasmatree/PID-Analyzer
 - PIDtoolbox (Matlab, inspiration) : https://github.com/bw1129/PIDtoolbox
+
+---
+
+## Télécharger le logiciel
+
+Les versions compilées (`.exe` Windows, standalone — aucune installation requise) sont disponibles sur la page des releases :
+
+**👉 [Toutes les versions — BlackBox Analyzer Releases](https://github.com/bouyous/PID-black-box/releases)**
+
+Chaque release contient :
+- L'exécutable Windows autonome (`BlackBoxAnalyzer_vX.X.X.exe`)
+- Les notes de version (ce qui a changé, ce qui a été corrigé)
+
+> Le logiciel est en développement actif. Les versions se succèdent régulièrement.

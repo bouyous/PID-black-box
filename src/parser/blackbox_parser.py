@@ -3,7 +3,7 @@ import platform
 import re
 import shutil
 import subprocess
-import stat
+import sys
 import tempfile
 from pathlib import Path
 
@@ -38,51 +38,41 @@ def _strip_unit(name: str) -> str:
     return _UNIT_RE.sub('', name).strip()
 
 
-def _decoder_candidates() -> list[str]:
-    """Noms de binaires à chercher selon la plateforme."""
-    if _PLATFORM == 'Windows':
+def _decoder_names() -> list[str]:
+    """Noms de binaire à chercher selon l'OS."""
+    if sys.platform.startswith('win'):
         return ['blackbox_decode.exe']
-    elif _PLATFORM == 'Darwin':
-        return ['blackbox_decode_mac', 'blackbox_decode_osx', 'blackbox_decode']
-    else:
-        return ['blackbox_decode_linux', 'blackbox_decode']
-
-
-def _ensure_executable(path: Path) -> None:
-    """S'assure que le binaire est exécutable sur Mac/Linux."""
-    if _PLATFORM != 'Windows':
-        current = path.stat().st_mode
-        path.chmod(current | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    # macOS / Linux : pas d'extension
+    return ['blackbox_decode']
 
 
 def find_decoder() -> Path | None:
-    """Cherche le décodeur blackbox dans tools/ puis dans le PATH (multi-plateforme)."""
-    tools_dir = Path(__file__).resolve().parent.parent.parent / 'tools'
-    candidates = _decoder_candidates()
+    """Cherche le binaire blackbox_decode (Windows .exe, macOS/Linux sans ext.)
+    dans : bundle PyInstaller, tools/ du repo, à côté de l'exe, puis PATH."""
+    names = _decoder_names()
+    roots: list[Path] = []
+    # 1. Bundle PyInstaller (--onefile extrait dans sys._MEIPASS)
+    meipass = getattr(sys, '_MEIPASS', None)
+    if meipass:
+        roots.append(Path(meipass) / 'tools')
+        roots.append(Path(meipass))
+    # 2. À côté de l'exe (.app/Contents/MacOS, onedir, etc.)
+    exe_dir = Path(sys.executable).resolve().parent
+    roots.append(exe_dir / 'tools')
+    roots.append(exe_dir)
+    # 3. Repo dev : tools/ à la racine
+    roots.append(Path(__file__).resolve().parent.parent.parent / 'tools')
 
-    # 1. Cherche dans tools/ du projet
-    for name in candidates:
-        local = tools_dir / name
-        if local.exists():
-            _ensure_executable(local)
-            return local
+    for root in roots:
+        for name in names:
+            c = root / name
+            if c.exists():
+                return c
 
-    # 2. Cherche dans le PATH système
-    for name in candidates:
+    for name in names + ['blackbox_decode']:
         found = shutil.which(name)
         if found:
             return Path(found)
-
-    # 3. Sur Mac: cherche aussi via Homebrew
-    if _PLATFORM == 'Darwin':
-        brew_paths = [
-            Path('/opt/homebrew/bin/blackbox_decode'),
-            Path('/usr/local/bin/blackbox_decode'),
-        ]
-        for p in brew_paths:
-            if p.exists():
-                return p
-
     return None
 
 
