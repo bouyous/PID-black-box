@@ -16,6 +16,7 @@ from enum import Enum
 from analysis.analyzer import AxisAnalysis, SessionAnalysis
 from analysis.header_parser import FlightConfig
 from analysis.sliders import compute_sliders, dump_sliders_cli
+from analysis.symptom_db import SymptomRule, match_symptoms
 
 
 class Severity(str, Enum):
@@ -72,6 +73,7 @@ class DiagnosticReport:
     summary: list[str]                    = field(default_factory=list)
     warnings: list[str]                   = field(default_factory=list)
     filter_recommendations: list[str]     = field(default_factory=list)
+    matched_symptoms: list[SymptomRule]   = field(default_factory=list)  # gelo/geno/slug/etc.
     drone_size: str                        = "5\""
     flying_style: str                      = "Freestyle"
     battery_cells_override: int            = 0

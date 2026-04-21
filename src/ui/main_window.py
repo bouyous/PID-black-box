@@ -176,6 +176,24 @@ class FeelSlidersBox(QFrame):
             s.setValue(3)
 
 
+class DecodeWorker(QThread):
+    """Décode un fichier BBL dans un thread séparé — évite de bloquer l'UI."""
+    done  = pyqtSignal(list)   # list[pd.DataFrame]
+    error = pyqtSignal(str)
+
+    def __init__(self, parser, path: str):
+        super().__init__()
+        self._parser = parser
+        self._path   = path
+
+    def run(self):
+        try:
+            sessions = self._parser.decode(self._path)
+            self.done.emit(sessions)
+        except Exception as exc:
+            self.error.emit(str(exc))
+
+
 class DropArea(QLabel):
     file_dropped = pyqtSignal(str)
     _BASE = ("border: 2px dashed {color}; border-radius: 8px; "
