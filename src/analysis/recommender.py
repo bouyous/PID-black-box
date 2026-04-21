@@ -13,6 +13,7 @@ from enum import Enum
 
 from analysis.analyzer import AxisAnalysis, SessionAnalysis
 from analysis.header_parser import FlightConfig
+from analysis.symptom_db import SymptomRule, match_symptoms
 
 
 class Severity(str, Enum):
@@ -70,6 +71,7 @@ class DiagnosticReport:
     summary: list[str]                    = field(default_factory=list)
     warnings: list[str]                   = field(default_factory=list)
     filter_recommendations: list[str]     = field(default_factory=list)  # lignes CLI brutes
+    matched_symptoms: list[SymptomRule]   = field(default_factory=list)  # règles symptômes matchées
     drone_size: str                        = "5\""
     flying_style: str                      = "Freestyle"
     battery_cells_override: int            = 0
@@ -228,6 +230,37 @@ def generate_report(session: SessionAnalysis, cfg: FlightConfig,
 
     # Score final
     report.health_score = compute_health_score(session)
+
+    # Matching symptomatique (gelo, geno, slug, over, vib_mech)
+    has_osc    = any(aa.has_oscillation for aa in session.axes)
+    osc_freq   = max((aa.dominant_freq_hz for aa in session.axes if aa.has_oscillation), default=0.0)
+    high_d_noi = any(
+        aa.d_noise_rms / (aa.gyro_noise_rms + 1e-6) > style.get('noise_ratio_max', 3.5)
+        for aa in session.axes if aa.d_noise_rms > 0
+    )
+    slow_resp  = any(
+        aa.avg_rise_time_ms > style.get('rise_max', 80) and aa.step_count >= 3
+        for aa in session.axes
+    )
+    high_over  = any(
+        aa.avg_overshoot_pct > style.get('overshoot_max', 25) and aa.step_count >= 3
+        for aa in session.axes
+    )
+    unfiltered_vib = any(
+        any(p for p in aa.vibration_peaks if not p.covered_by_rpm_filter)
+        for aa in session.axes
+    )
+    jitter = max((aa.oscillation_score for aa in session.axes), default=0.0)
+
+    report.matched_symptoms = match_symptoms(
+        has_oscillation       = has_osc,
+        oscillation_freq_hz   = osc_freq,
+        high_d_noise          = high_d_noi,
+        slow_response         = slow_resp,
+        high_overshoot        = high_over,
+        unfiltered_vibrations = unfiltered_vib,
+        jitter_score          = jitter,
+    )
 
     if not report.recommendations and not report.filter_recommendations:
         report.summary.append(

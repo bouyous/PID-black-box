@@ -1,6 +1,9 @@
+import os
+import platform
 import re
 import shutil
 import subprocess
+import stat
 import tempfile
 from pathlib import Path
 
@@ -27,20 +30,60 @@ MIN_ROWS = 50  # sessions avec moins de points = vides/corrompues, ignorées
 
 _UNIT_RE = re.compile(r'\s*\([^)]+\)$')
 
+_PLATFORM = platform.system()   # 'Windows', 'Darwin' (Mac), 'Linux'
+
 
 def _strip_unit(name: str) -> str:
     """'gyroADC[0] (deg/s)' → 'gyroADC[0]'"""
     return _UNIT_RE.sub('', name).strip()
 
 
+def _decoder_candidates() -> list[str]:
+    """Noms de binaires à chercher selon la plateforme."""
+    if _PLATFORM == 'Windows':
+        return ['blackbox_decode.exe']
+    elif _PLATFORM == 'Darwin':
+        return ['blackbox_decode_mac', 'blackbox_decode_osx', 'blackbox_decode']
+    else:
+        return ['blackbox_decode_linux', 'blackbox_decode']
+
+
+def _ensure_executable(path: Path) -> None:
+    """S'assure que le binaire est exécutable sur Mac/Linux."""
+    if _PLATFORM != 'Windows':
+        current = path.stat().st_mode
+        path.chmod(current | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+
 def find_decoder() -> Path | None:
-    """Cherche blackbox_decode.exe dans tools/ puis dans le PATH."""
+    """Cherche le décodeur blackbox dans tools/ puis dans le PATH (multi-plateforme)."""
     tools_dir = Path(__file__).resolve().parent.parent.parent / 'tools'
-    local = tools_dir / 'blackbox_decode.exe'
-    if local.exists():
-        return local
-    found = shutil.which('blackbox_decode') or shutil.which('blackbox_decode.exe')
-    return Path(found) if found else None
+    candidates = _decoder_candidates()
+
+    # 1. Cherche dans tools/ du projet
+    for name in candidates:
+        local = tools_dir / name
+        if local.exists():
+            _ensure_executable(local)
+            return local
+
+    # 2. Cherche dans le PATH système
+    for name in candidates:
+        found = shutil.which(name)
+        if found:
+            return Path(found)
+
+    # 3. Sur Mac: cherche aussi via Homebrew
+    if _PLATFORM == 'Darwin':
+        brew_paths = [
+            Path('/opt/homebrew/bin/blackbox_decode'),
+            Path('/usr/local/bin/blackbox_decode'),
+        ]
+        for p in brew_paths:
+            if p.exists():
+                return p
+
+    return None
 
 
 class BlackboxParser:
@@ -53,30 +96,61 @@ class BlackboxParser:
     def decode(self, bbl_path: str | Path) -> list[pd.DataFrame]:
         """Décode un fichier .bbl/.bfl et retourne une DataFrame par session valide."""
         if not self.is_ready():
+            platform_hint = {
+                'Darwin':  (
+                    "Téléchargez le binaire Mac depuis :\n"
+                    "https://github.com/betaflight/blackbox-tools/releases\n"
+                    "Prenez 'blackbox_decode_mac' et placez-le dans le dossier tools/.\n"
+                    "Ou installez via Homebrew : brew install blackbox-tools"
+                ),
+                'Linux':   (
+                    "Téléchargez le binaire Linux depuis :\n"
+                    "https://github.com/betaflight/blackbox-tools/releases\n"
+                    "Placez 'blackbox_decode' dans le dossier tools/."
+                ),
+            }.get(_PLATFORM, (
+                "Placez blackbox_decode.exe dans le dossier tools/ du projet.\n"
+                "(Source : https://github.com/betaflight/blackbox-tools/releases)"
+            ))
             raise FileNotFoundError(
-                "blackbox_decode.exe introuvable.\n"
-                "Placez-le dans le dossier tools/ du projet.\n"
-                "(Source : PIDtoolboxPro_v0.81_win/main/blackbox_decode.exe)"
+                f"Décodeur blackbox introuvable sur {_PLATFORM}.\n{platform_hint}"
             )
 
         bbl_path = Path(bbl_path)
+
+        # Sur Mac : supprimer l'attribut de quarantaine du décodeur s'il est présent
+        if _PLATFORM == 'Darwin':
+            try:
+                subprocess.run(
+                    ['xattr', '-d', 'com.apple.quarantine', str(self.decoder)],
+                    capture_output=True, timeout=5
+                )
+            except Exception:
+                pass  # xattr absent ou déjà propre
 
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_bbl = Path(tmpdir) / bbl_path.name
             shutil.copy2(bbl_path, tmp_bbl)
 
-            result = subprocess.run(
-                [
-                    str(self.decoder),
-                    '--unit-rotation', 'deg/s',
-                    '--unit-vbat', 'V',
-                    '--unit-amperage', 'A',
-                    str(tmp_bbl),
-                ],
-                capture_output=True,
-                text=True,
-                cwd=tmpdir,
-            )
+            try:
+                result = subprocess.run(
+                    [
+                        str(self.decoder),
+                        '--unit-rotation', 'deg/s',
+                        '--unit-vbat', 'V',
+                        '--unit-amperage', 'A',
+                        str(tmp_bbl),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    cwd=tmpdir,
+                    timeout=120,  # 2 min max — évite le freeze infini
+                )
+            except subprocess.TimeoutExpired:
+                raise ValueError(
+                    "Le décodeur a mis trop de temps (>2 min).\n"
+                    "Le fichier est peut-être trop volumineux ou corrompu."
+                )
 
             # returncode != 0 n'est pas toujours fatal (sessions partiellement corrompues)
             # On lit ce qui a été généré quoi qu'il arrive

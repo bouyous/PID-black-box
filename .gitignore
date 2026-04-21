@@ -27,8 +27,12 @@ samples/*.BBL
 samples/*.BFL
 samples/*.csv
 
-# Outil de décodage (binaire externe, non commité)
+# Outils de décodage (binaires externes, non commités)
 tools/blackbox_decode.exe
+tools/blackbox_decode_mac
+tools/blackbox_decode_osx
+tools/blackbox_decode_linux
+tools/blackbox_decode
 
 # Logs
 *.log

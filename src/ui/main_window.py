@@ -1,7 +1,7 @@
 from pathlib import Path
 
 import pandas as pd
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QDragEnterEvent, QDropEvent
 from PyQt6.QtWidgets import (
     QComboBox,
@@ -90,6 +90,24 @@ QPushButton:disabled { color: #555; border-color: #333; }
 """
 
 
+class DecodeWorker(QThread):
+    """Décode un fichier BBL dans un thread séparé — évite de bloquer l'UI."""
+    done  = pyqtSignal(list)   # list[pd.DataFrame]
+    error = pyqtSignal(str)
+
+    def __init__(self, parser, path: str):
+        super().__init__()
+        self._parser = parser
+        self._path   = path
+
+    def run(self):
+        try:
+            sessions = self._parser.decode(self._path)
+            self.done.emit(sessions)
+        except Exception as exc:
+            self.error.emit(str(exc))
+
+
 class DropArea(QLabel):
     file_dropped = pyqtSignal(str)
     _BASE = ("border: 2px dashed {color}; border-radius: 8px; "
@@ -130,6 +148,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.parser = BlackboxParser()
         self._last_cfg: FlightConfig | None = None
+        self._worker:  DecodeWorker | None = None   # thread en cours
 
         # Référence pour comparaison avant/après
         self._reference: dict | None = None   # {file, sessions, analyses, reports, cfg, size, style}
@@ -140,11 +159,15 @@ class MainWindow(QMainWindow):
         self._build_ui()
 
         if not self.parser.is_ready():
-            self.status.showMessage(
-                "  blackbox_decode.exe introuvable — voir tools/README.md", 0
-            )
+            import platform
+            sys_name = platform.system()
+            hint = {
+                'Darwin': "blackbox_decode_mac introuvable — voir tools/README.md (section Mac)",
+                'Linux':  "blackbox_decode introuvable — voir tools/README.md",
+            }.get(sys_name, "blackbox_decode.exe introuvable — voir tools/README.md")
+            self.status.showMessage(f"  ⚠️  {hint}", 0)
         else:
-            self.status.showMessage("Prêt — glissez un fichier blackbox pour commencer.")
+            self.status.showMessage("✅  Prêt — glissez un fichier blackbox pour commencer.")
 
     def _build_ui(self):
         central = QWidget()
@@ -245,11 +268,19 @@ class MainWindow(QMainWindow):
             self._on_file_dropped(path)
 
     def _on_file_dropped(self, path: str):
+        # Si un décodage est déjà en cours, on l'ignore
+        if self._worker is not None and self._worker.isRunning():
+            self.status.showMessage("⏳  Décodage déjà en cours — attendez la fin.", 3000)
+            return
+
         name = Path(path).name
-        self.status.showMessage(f"Décodage en cours : {name} …")
+        self.status.showMessage(f"⏳  Décodage en cours : {name} …")
+        self.drop_area.setText(f"⏳  Décodage de {name}…")
         self.session_tabs.clear()
         self.session_tabs.setVisible(False)
+        self._btn_set_ref.setEnabled(False)
 
+        # Parse l'en-tête (rapide, pas besoin de thread)
         try:
             self._last_cfg = parse_header(path)
         except Exception:
@@ -262,12 +293,23 @@ class MainWindow(QMainWindow):
             self._size_combo.setCurrentText(hint)
             self._size_combo.blockSignals(False)
 
-        try:
-            sessions = self.parser.decode(path)
-        except Exception as exc:
-            self.status.showMessage(f"Erreur : {exc}")
-            self.drop_area.setText(f"Échec du chargement de {name}")
-            return
+        # Lance le décodage dans un thread séparé (évite le freeze UI)
+        self._pending_path = path
+        self._worker = DecodeWorker(self.parser, path)
+        self._worker.done.connect(lambda sessions: self._on_decode_done(sessions, path))
+        self._worker.error.connect(self._on_decode_error)
+        self._worker.start()
+
+    def _on_decode_error(self, msg: str):
+        name = Path(getattr(self, '_pending_path', '')).name
+        self.status.showMessage(f"❌  Erreur : {msg}")
+        self.drop_area.setText(
+            f"❌  Échec du chargement de {name}\n"
+            "Glissez un fichier .bbl / .bfl ici"
+        )
+
+    def _on_decode_done(self, sessions: list, path: str):
+        name = Path(path).name
 
         # Calcule analyses + rapports
         size    = self._size_combo.currentText()
@@ -305,10 +347,10 @@ class MainWindow(QMainWindow):
         self.session_tabs.setVisible(True)
         total_rows = sum(len(s) for s in sessions)
         self.status.showMessage(
-            f"  {name}  —  {len(sessions)} session(s), {total_rows:,} points"
+            f"✅  {name}  —  {len(sessions)} session(s), {total_rows:,} points"
         )
         self.drop_area.setText(
-            f"  {name}  —  {len(sessions)} session(s)   "
+            f"✅  {name}  —  {len(sessions)} session(s)   "
             "(glissez un autre fichier pour remplacer)"
         )
         self._btn_set_ref.setEnabled(True)
