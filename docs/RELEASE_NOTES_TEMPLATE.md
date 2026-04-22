@@ -19,13 +19,15 @@ Windows d'abord (le plus simple : double-clic), Mac ensuite, Linux en dernier.
 ### 🍎 macOS
 
 1. Téléchargez **`BlackBoxAnalyzer-macOS.zip`** depuis la section *Assets*.
-2. Double-cliquez sur le `.zip` pour le dézipper.
-3. **Première fois seulement** — ouvrez le Terminal dans le dossier et lancez :
+2. Double-cliquez sur le `.zip` pour le dézipper — vous obtenez `BlackBoxAnalyzer.app`,
+   `fix_mac.sh` et `LISEZ-MOI.txt`.
+3. **Première fois seulement** — ouvrez le **Terminal** et copiez-collez cette ligne
+   (remplacez le chemin si le .app n'est pas dans Téléchargements) :
    ```bash
-   bash fix_mac.sh
+   xattr -cr ~/Downloads/BlackBoxAnalyzer.app
    ```
-   (contourne Gatekeeper, rend exécutable)
-4. Double-cliquez sur `BlackBoxAnalyzer.app`.
+   > 💡 **Ou plus simple :** glissez-déposez `fix_mac.sh` dans le Terminal, appuyez sur Entrée.
+4. Double-cliquez sur `BlackBoxAnalyzer.app`. ✅
 
 **Alternative depuis les sources :**
 ```bash

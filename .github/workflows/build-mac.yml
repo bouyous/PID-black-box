@@ -57,14 +57,40 @@ jobs:
         run: |
           python build_exe.py
 
-      - name: Package .app as .zip
+      - name: Package .app + fix_mac script as .zip
         run: |
+          # On copie le script de déblocage Gatekeeper à côté du .app pour que
+          # l'utilisateur n'ait pas besoin du repo complet.
+          cp fix_mac_standalone.sh dist/fix_mac.sh
+          chmod +x dist/fix_mac.sh
+
+          # README court livré dans le .zip
+          cat > dist/LISEZ-MOI.txt <<'EOF'
+          BlackBox Analyzer — Installation Mac
+          =====================================
+
+          Vous venez de dézipper BlackBoxAnalyzer-macOS.zip.
+
+          ÉTAPE 1 (une seule fois, pour débloquer Gatekeeper) :
+            - Ouvrez Terminal (Applications → Utilitaires → Terminal).
+            - Glissez-déposez le fichier fix_mac.sh dans la fenêtre du Terminal.
+            - Appuyez sur Entrée.
+
+          ALTERNATIVE sans script, en une ligne dans Terminal :
+            xattr -cr ~/Downloads/BlackBoxAnalyzer.app
+
+          ÉTAPE 2 :
+            Double-cliquez sur BlackBoxAnalyzer.app pour lancer l'app.
+
+          Si "blackbox_decode introuvable" apparaît :
+            brew install blackbox-tools
+          EOF
+
           cd dist
-          # Si on a un .app (bundle), on zippe. Sinon on zippe le binaire seul.
           if [ -d "BlackBoxAnalyzer.app" ]; then
-            zip -ry BlackBoxAnalyzer-macOS.zip BlackBoxAnalyzer.app
+            zip -ry BlackBoxAnalyzer-macOS.zip BlackBoxAnalyzer.app fix_mac.sh LISEZ-MOI.txt
           else
-            zip -j BlackBoxAnalyzer-macOS.zip BlackBoxAnalyzer
+            zip -j BlackBoxAnalyzer-macOS.zip BlackBoxAnalyzer fix_mac.sh LISEZ-MOI.txt
           fi
           ls -la
 
