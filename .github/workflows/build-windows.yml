@@ -31,18 +31,15 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller
 
-      # Récupère blackbox_decode.exe depuis la release officielle Betaflight
-      - name: Download blackbox_decode.exe
+      # blackbox_decode.exe est commité dans le repo (tools/blackbox_decode.exe, 108KB)
+      # — plus simple et plus fiable que de le télécharger.
+      - name: Verify blackbox_decode.exe
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path tools | Out-Null
-          $url = "https://github.com/betaflight/blackbox-tools/releases/download/0.4.4/blackbox-tools-0.4.4-windows.zip"
-          Invoke-WebRequest -Uri $url -OutFile bbtools.zip
-          Expand-Archive bbtools.zip -DestinationPath bbtools_extracted -Force
-          $exe = Get-ChildItem -Recurse -Filter blackbox_decode.exe bbtools_extracted | Select-Object -First 1
-          if (-not $exe) { throw "blackbox_decode.exe introuvable dans l'archive" }
-          Copy-Item $exe.FullName tools/blackbox_decode.exe -Force
-          tools/blackbox_decode.exe --help | Select-Object -First 3
+          if (-not (Test-Path tools/blackbox_decode.exe)) {
+            throw "tools/blackbox_decode.exe manquant dans le repo"
+          }
+          Get-Item tools/blackbox_decode.exe | Format-List Name,Length
 
       - name: Build .exe with PyInstaller
         run: python build_exe.py

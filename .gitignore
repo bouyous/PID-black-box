@@ -26,8 +26,11 @@ Thumbs.db
 # Logs
 *.log
 
-# Outil de décodage (binaire externe, non commité dans git — bundlé dans l'exe)
-tools/blackbox_decode.exe
+# Outil de décodage : blackbox_decode.exe (Windows, 108KB) est désormais commité
+# pour que le workflow GitHub Actions build-windows.yml puisse créer l'exe sans
+# dépendance réseau. Les binaires Mac/Linux sont compilés à la volée.
+tools/blackbox_decode
+tools/blackbox_decode_mac
 
 # Fichiers blackbox de test — trop volumineux pour git
 samples/*.bbl
