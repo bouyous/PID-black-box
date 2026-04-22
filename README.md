@@ -80,3 +80,106 @@ Chaque release contient :
 - Les notes de version (ce qui a changé, ce qui a été corrigé)
 
 > Le logiciel est en développement actif. Les versions se succèdent régulièrement.
+
+---
+
+## 🍎 Installation et lancement sur macOS
+
+> **Nouveau dans la v1.5.0** — Support Mac natif + correction du chargement infini lors du drag & drop.
+
+### Prérequis
+
+- **Python 3.11 ou supérieur** ([télécharger](https://www.python.org/downloads/macos/))
+- **Homebrew** (recommandé pour installer le décodeur)
+
+### Étape 1 — Récupérer le code
+
+```bash
+cd ~/Documents
+git clone https://github.com/bouyous/PID-black-box.git
+cd PID-black-box
+```
+
+### Étape 2 — Lancer le script de fix Mac (UNE SEULE FOIS)
+
+```bash
+bash fix_mac.sh
+```
+
+Ce script :
+- Supprime la quarantaine macOS (Gatekeeper) — **plus besoin de clic droit pour ouvrir**
+- Rend les binaires exécutables (`chmod +x`)
+- Vérifie Python 3 et installe les dépendances Python manquantes
+- Vérifie la présence du décodeur `blackbox_decode`
+
+### Étape 3 — Installer le décodeur Betaflight (si absent)
+
+**Option A — Homebrew (recommandé) :**
+```bash
+brew install blackbox-tools
+```
+
+**Option B — Manuel :** téléchargez le binaire Mac depuis
+https://github.com/betaflight/blackbox-tools/releases, renommez-le `blackbox_decode_mac`
+et placez-le dans le dossier `tools/` du projet.
+
+### Étape 4 — Lancer l'application
+
+```bash
+python3 src/main.py
+```
+
+L'application s'ouvre. Glissez un fichier `.bbl` ou `.bfl` dans la zone de dépôt
+et le diagnostic apparaît automatiquement.
+
+### Mise à jour vers une nouvelle version
+
+```bash
+cd ~/Documents/PID-black-box
+git pull
+python3 src/main.py
+```
+
+### Dépannage Mac
+
+| Problème | Solution |
+|----------|----------|
+| « L'app ne s'ouvre pas » au double-clic | Lancer `bash fix_mac.sh` une fois |
+| « blackbox_decode introuvable » | `brew install blackbox-tools` |
+| « ModuleNotFoundError: PyQt6 » | `pip3 install PyQt6 pyqtgraph numpy pandas scipy` |
+| Chargement infini sur drag & drop | Mettez à jour vers la **v1.5.0+** (`git pull`) |
+
+---
+
+## 🐧 Installation et lancement sur Linux
+
+```bash
+git clone https://github.com/bouyous/PID-black-box.git
+cd PID-black-box
+pip3 install -r requirements.txt
+
+# Décodeur blackbox
+sudo apt install blackbox-tools   # Debian/Ubuntu
+# ou téléchargez le binaire depuis https://github.com/betaflight/blackbox-tools/releases
+# placez 'blackbox_decode' dans tools/ et : chmod +x tools/blackbox_decode
+
+python3 src/main.py
+```
+
+---
+
+## 💻 Installation et lancement sur Windows depuis les sources
+
+Si vous préférez lancer depuis les sources plutôt que l'`.exe` standalone :
+
+```cmd
+git clone https://github.com/bouyous/PID-black-box.git
+cd PID-black-box
+pip install -r requirements.txt
+
+REM Téléchargez blackbox_decode.exe depuis :
+REM https://github.com/betaflight/blackbox-tools/releases
+REM Placez-le dans le dossier tools/
+
+python src\main.py
+```
