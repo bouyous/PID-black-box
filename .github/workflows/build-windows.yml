@@ -41,6 +41,14 @@ jobs:
           }
           Get-Item tools/blackbox_decode.exe | Format-List Name,Length
 
+      # Smoke test : vérifie qu'on peut importer main_window sans NameError/ImportError.
+      # Évite de publier une release où l'app crashe au lancement (bug v1.6.0-v1.7.3).
+      - name: Smoke test imports
+        shell: pwsh
+        run: |
+          $env:PYTHONPATH = "src"
+          python -c "import ui.main_window; print('import OK')"
+
       - name: Build .exe with PyInstaller
         run: python build_exe.py
 

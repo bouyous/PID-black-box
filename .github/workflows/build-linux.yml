@@ -57,6 +57,13 @@ jobs:
           chmod +x "$GITHUB_WORKSPACE/tools/blackbox_decode"
           "$GITHUB_WORKSPACE/tools/blackbox_decode" --help | head -3 || true
 
+      # Smoke test : vérifie qu'on peut importer main_window sans NameError/ImportError.
+      # Mode offscreen pour que Qt ne cherche pas d'écran sur le runner.
+      - name: Smoke test imports
+        run: |
+          export QT_QPA_PLATFORM=offscreen
+          PYTHONPATH=src python -c "import ui.main_window; print('import OK')"
+
       - name: Build binary with PyInstaller
         run: python build_exe.py
 
