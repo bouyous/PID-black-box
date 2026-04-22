@@ -1,0 +1,66 @@
+{
+  "diagnostic_matrix": {
+    "metadata": {
+      "version": "1.0",
+      "scope": "Flight Controller & Advanced Filtering (Betaflight v4.5+)",
+      "symptoms_addressed": ["Jitter", "Jello Effect"],
+      "description": "Matrice diagnostique structurée par symptôme pour l'analyse de données de vol FPV, couvrant les corrélations entre symptômes observés et réglages optimaux/correctifs."
+    },
+    "symptoms": [
+      {
+        "symptom_fr": "Jitter (Oscillations rapides)",
+        "symptom_en": "Jitter / High-Frequency Vibration",
+        "description": "Mouvements erratiques et très fréquents, souvent perceptibles même en vol stable ou lors de manœuvres légères. Indique une instabilité excessive des axes ou un problème de contrôle PID trop réactif.",
+        "diagnostic_rules": [
+          {
+            "cause_vector": "Software/Filtering (Logiciel)",
+            "sous_cause": "PID mal réglé / Commande trop agressive",
+            "description_technique": "Les valeurs P, I ou D sont trop élevées, provoquant un sur-amortissement et une oscillation de correction constante.",
+            "parametres_a_ajuster": ["PID Loop Gains (P, I, D)", "Filter Settings"],
+            "action_recommandee": "Réduire progressivement les gains PID. Vérifier le filtre Notch pour éliminer les résonances spécifiques.",
+            "risk_overtuning": "Élevé - Peut rendre l'appareil trop mou ou incapable de corriger rapidement des perturbations externes."
+          },
+          {
+            "cause_vector": "Mechanical (Mécanique)",
+            "sous_cause": "Vibrations du châssis/Moteurs",
+            "description_technique": "Défaillance des supports moteurs (mounts), désalignement de l'hélice, ou jeu excessif dans les axes de fixation. Le signal IMU capte cette vibration structurelle.",
+            "parametres_a_ajuster": ["Aucun réglage logiciel direct", "Vérification matérielle"],
+            "action_recommandee": "Inspection physique des fixations (vis mal serrée, supports usés). Équilibrage des hélices.",
+            "risk_overtuning": "N/A - Nécessite une intervention mécanique."
+          },
+          {
+            "cause_vector": "Electrical/Power (Électrique)",
+            "sous_cause": "Interférences ou problèmes d'alimentation",
+            "description_technique": "Bruit électrique induit par les MOSFETs, ESCs ou la batterie (EMI). Peut affecter la qualité du signal IMU.",
+            "parametres_a_ajuster": ["Filter Settings (Low Pass Filter)", "ESC/FC Placement"],
+            "action_recommandee": "Vérifier le câblage pour les boucles de masse propres. Ajuster les filtres passe-bas sur l'IMU si le bruit est identifiable et constant.",
+            "risk_overtuning": "Moyen - Filtrer trop agressivement peut masquer des données critiques."
+          }
+        ]
+      },
+      {
+        "symptom_fr": "Jello Effect (Flou vidéo)",
+        "symptom_en": "Rolling Shutter / Vibration-Induced Blurring",
+        "description": "Apparence de flou, de tremblement horizontal ou vertical dans le flux vidéo. Il est causé par la vibration du châssis qui perturbe l'acquisition image du capteur (effet 'rolling shutter'), et non directement un défaut de contrôle en vol.",
+        "diagnostic_rules": [
+          {
+            "cause_vector": "Mechanical (Mécanique)",
+            "sous_cause": "Vibrations structurelles transmises à la caméra",
+            "description_technique": "Le châssis vibre au-delà des fréquences supportées par le filtre de stabilisation vidéo ou par l'objectif/monture caméra.",
+            "parametres_a_ajuster": ["Dampers (Amortisseurs) sur les mounts caméra", "Vérification du cadre"],
+            "action_recommandee": "Installer des amortisseurs spécifiques pour la caméra. Vérifier que les vibrations ne proviennent pas de l'assemblage moteur/ESC.",
+            "risk_overtuning": "N/A - Solution purement physique."
+          },
+          {
+            "cause_vector": "Software/Filtering (Logiciel)",
+            "sous_cause": "Instabilité des données IMU",
+            "description_technique": "Bien que le Jello soit souvent mécanique, une mauvaise gestion de l'IMU par le firmware peut exacerber les vibrations détectées et transmettre un signal instable au contrôleur.",
+            "parametres_a_ajuster": ["Gyro/Accéléromètre Filters", "PID tuning"],
+            "action_recommandee": "Assurer que les filtres de l'IMU sont optimaux pour la fréquence de vibration dominante. Réviser le PID si le jitter est également présent.",
+            "risk_overtuning": "Moyen - Trop filtrer peut masquer des changements rapides et nécessaires au vol."
+          },
+          {
+            "cause_vector": "Electrical/Power (Électrique)",
+            "sous_cause": "Interférence de courant ou bruit électrique",
+            "description_technique": "Les pics de consommation (transitoires) créent des variations de tension qui, en plus du jitter moteur, peuvent induire un bruit sur le signal IMU.",
+            "parametres_a

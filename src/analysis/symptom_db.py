@@ -1,16 +1,27 @@
 """
 Base de connaissances symptomatique pour le diagnostic Betaflight.
-Symptômes catalogués (terminologie FPV standard) :
-  - Jello   : ondulation jelly-like visible sur la vidéo (vibrations + rolling shutter,
-              non corrigeable même par Gyroflow)
-  - Jitter  : mouvements erratiques haute fréquence / tremblements toutes directions
-  - Slug    : drone mou, réponse lente
-  - Over    : overshoot / dépassement excessif
-  - Vib     : vibrations mécaniques non filtrées
-  - Elec    : problèmes électriques (tension, ESC, MOSFET)
 
-Structure : chaque SymptomRule décode un symptôme en causes potentielles,
-tests quantifiables et actions correctives.
+Terminologie FPV officielle (sources : DeerFlow + Diagnostic Matrix v1.0 —
+Flight Controller & Advanced Filtering pour Betaflight v4.5+) :
+
+  - Jello Effect : Rolling Shutter / Vibration-Induced Blurring.
+                   Flou, tremblement horizontal ou vertical dans le flux vidéo,
+                   causé par les vibrations du châssis transmises à la caméra
+                   perturbant l'acquisition image du capteur CMOS (effet
+                   rolling shutter). Souvent NON corrigeable même avec Gyroflow.
+                   C'est un symptôme VIDÉO, pas un défaut de contrôle en vol.
+
+  - Jitter        : Oscillations / vibrations haute fréquence. Mouvements
+                    erratiques très fréquents, souvent perceptibles même en
+                    vol stable. Défaut de CONTRÔLE (IMU/PID).
+
+  - Slug          : drone mou, réponse lente.
+  - Over          : overshoot / dépassement excessif.
+  - Vib mécanique : vibrations non filtrées (cadre, hélices).
+
+Structure : chaque SymptomRule décode un symptôme en causes potentielles par
+vecteur (Software, PID, Électrique, Mécanique, Gyro), tests quantifiables,
+actions correctives et niveau de risque au sur-réglage.
 """
 from __future__ import annotations
 
@@ -76,28 +87,48 @@ def _add(rule: SymptomRule) -> None:
 
 _add(SymptomRule(
     symptom_id  = "jello",
-    label_fr    = "Effet « Jello » sur la vidéo (ondulation jelly-like)",
-    label_en    = "Jello effect on video footage",
+    label_fr    = "Jello Effect — flou/tremblement visible sur la vidéo",
+    label_en    = "Jello Effect / Rolling Shutter / Vibration-Induced Blurring",
     description = (
-        "Ondulation visible sur l'enregistrement vidéo, ressemblant à de la gelée "
-        "qui tremble. Causée par des vibrations transmises au capteur caméra "
-        "combinées au rolling shutter du capteur CMOS. "
+        "Apparence de flou, de tremblement horizontal ou vertical dans le flux vidéo. "
+        "Causé par la vibration du châssis transmise à la caméra qui perturbe "
+        "l'acquisition image du capteur CMOS (effet rolling shutter). "
+        "Ce n'est PAS un défaut de contrôle en vol — c'est un symptôme vidéo. "
         "Ce défaut est souvent NON corrigeable en post-traitement, même avec Gyroflow. "
-        "Indique généralement des oscillations de la cellule autour de 50–200 Hz."
+        "Signe généralement des oscillations de la cellule autour de 50–200 Hz."
     ),
     severity = "Haute",
     causes = [
         CauseDiagnosis(
+            vector    = CauseVector.MECHANICAL,
+            details   = (
+                "Vibrations structurelles transmises à la caméra au-delà des fréquences "
+                "absorbées par la monture. C'est la cause n°1 du Jello — le châssis vibre, "
+                "la caméra vibre, le capteur CMOS enregistre une image ondulée (rolling shutter). "
+                "Remède primaire : amortisseurs (dampers) sur la monture caméra."
+            ),
+            params_to_adjust = ["Dampers (amortisseurs) monture caméra", "Serrage du cadre", "Équilibrage hélices"],
+            risk        = RiskLevel.NA,
+            risk_reason = "Solution purement physique — aucun réglage logiciel ne corrige ceci.",
+            test_quantifiable = "Inspection vibratoire : pics FFT > 50 Hz sur axes gyro malgré filtrage correct.",
+            action      = "Installer des amortisseurs spécifiques sur la monture caméra. "
+                         "Vérifier que les vibrations ne proviennent pas de l'assemblage moteur/ESC. "
+                         "Serrer les vis du cadre, équilibrer ou remplacer les hélices.",
+        ),
+        CauseDiagnosis(
             vector    = CauseVector.SOFTWARE,
             details   = (
                 "Réaction PID excessive ou mal amortie : terme D qui réagit trop "
-                "fortement aux micro-vibrations, ou filtre non adapté à la fréquence de vol."
+                "fortement aux micro-vibrations, ou filtre non adapté à la fréquence de vol. "
+                "Bien que le Jello soit souvent mécanique, une mauvaise gestion de l'IMU "
+                "par le firmware peut exacerber les vibrations détectées."
             ),
             params_to_adjust = ["P_Gain (Roll/Pitch)", "Dterm (Rate Filter)", "Gyro DLPF"],
             risk        = RiskLevel.MEDIUM,
             risk_reason = "Réduire trop D ou les filtres peut rendre le drone mou.",
             test_quantifiable = "Settling time doit être < 0.3 s sur un échelon de setpoint.",
-            action      = "Réduire D progressivement (-5%). Tester filtres passe-bas plus agressifs.",
+            action      = "Optimiser les filtres IMU pour la fréquence vibratoire dominante. "
+                         "Réduire D progressivement (-5%). Tester filtres passe-bas plus agressifs.",
         ),
         CauseDiagnosis(
             vector    = CauseVector.ELECTRICAL,
@@ -147,12 +178,14 @@ _add(SymptomRule(
 
 _add(SymptomRule(
     symptom_id  = "jitter",
-    label_fr    = "Mouvements erratiques / Jitter haute fréquence",
-    label_en    = "Erratic movement / High-frequency jittering",
+    label_fr    = "Jitter — oscillations rapides haute fréquence",
+    label_en    = "Jitter / High-Frequency Vibration",
     description = (
-        "Le drone vibre ou bouge de manière imprévisible et désordonnée dans "
-        "toutes les directions, souvent sans cause externe apparente. "
-        "Le système oscille en boucle et ne peut pas atteindre d'état stable."
+        "Mouvements erratiques et très fréquents, souvent perceptibles même en "
+        "vol stable ou lors de manœuvres légères. Indique une instabilité excessive "
+        "des axes ou un problème de contrôle PID trop réactif. "
+        "À distinguer du Jello Effect (qui est un symptôme vidéo) : le jitter "
+        "est un défaut de CONTRÔLE perçu dans les données IMU/gyro."
     ),
     severity = "Haute",
     causes = [
