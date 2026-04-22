@@ -23,6 +23,7 @@ from analysis.analyzer import FlightTypeResult
 from analysis.header_parser import FlightConfig
 from analysis.recommender import DiagnosticReport, Recommendation, Severity, AXIS_NAME
 from analysis.sliders import compute_sliders
+from analysis.symptom_db import CauseVector, RiskLevel, SymptomRule
 
 
 def _strip_cli_comments(dump: str) -> str:
