@@ -11,8 +11,23 @@ on:
 
 jobs:
   build-mac:
-    # macos-latest = Apple Silicon (M1/M2), gratuit sur repo public
-    runs-on: macos-latest
+    # Matrice : on build pour les DEUX architectures macOS.
+    #   - macos-13 = runner Intel x86_64 (MacBook Pro/Air 2020 et avant)
+    #   - macos-14 = runner Apple Silicon arm64 (M1/M2/M3/M4)
+    # Chaque job produit un .zip différent attaché à la Release.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-13
+            arch: Intel
+            arch_short: x86_64
+          - runner: macos-14
+            arch: AppleSilicon
+            arch_short: arm64
+
+    runs-on: ${{ matrix.runner }}
+    name: Build macOS (${{ matrix.arch }})
 
     permissions:
       contents: write   # pour attacher l'artefact à la Release
@@ -20,6 +35,9 @@ jobs:
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
+
+      - name: Show architecture
+        run: uname -m
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -33,17 +51,13 @@ jobs:
           pip install pyinstaller
 
       # Compile blackbox_decode pour macOS depuis les sources officielles.
-      # C'est un petit outil en C, compile en < 30 s avec make.
       - name: Build blackbox_decode (macOS native)
         run: |
           set -e
           git clone --depth 1 https://github.com/betaflight/blackbox-tools.git /tmp/bbtools
           cd /tmp/bbtools
-          # make (sans arg) build toutes les cibles avec les bonnes deps.
-          # `make blackbox_decode` seul ne linke pas imu/gpx/stream/tools/units.
           make
           mkdir -p "$GITHUB_WORKSPACE/tools"
-          # Le binaire peut être à la racine (obj/) ou dans bin/ selon version
           if   [ -f obj/blackbox_decode ]; then SRCBIN=obj/blackbox_decode
           elif [ -f bin/blackbox_decode ]; then SRCBIN=bin/blackbox_decode
           elif [ -f blackbox_decode ];     then SRCBIN=blackbox_decode
@@ -54,22 +68,34 @@ jobs:
           "$GITHUB_WORKSPACE/tools/blackbox_decode" --help | head -3 || true
 
       - name: Build .app with PyInstaller
+        run: python build_exe.py
+
+      - name: Fix permissions + verify architecture
         run: |
-          python build_exe.py
+          set -e
+          if [ -d "dist/BlackBoxAnalyzer.app" ]; then
+            BIN="dist/BlackBoxAnalyzer.app/Contents/MacOS/BlackBoxAnalyzer"
+          else
+            BIN="dist/BlackBoxAnalyzer"
+          fi
+          chmod +x "$BIN"
+          file "$BIN"
+          # Sanity check : l'archi doit correspondre à la matrice
+          if ! file "$BIN" | grep -q "${{ matrix.arch_short }}"; then
+            echo "⚠️  Le binaire n'a pas l'archi attendue (${{ matrix.arch_short }})"
+            file "$BIN"
+          fi
 
       - name: Package .app + fix_mac script as .zip
         run: |
-          # On copie le script de déblocage Gatekeeper à côté du .app pour que
-          # l'utilisateur n'ait pas besoin du repo complet.
           cp fix_mac_standalone.sh dist/fix_mac.sh
           chmod +x dist/fix_mac.sh
 
-          # README court livré dans le .zip
           cat > dist/LISEZ-MOI.txt <<'EOF'
           BlackBox Analyzer — Installation Mac
           =====================================
 
-          Vous venez de dézipper BlackBoxAnalyzer-macOS.zip.
+          Vous venez de dézipper BlackBoxAnalyzer-macOS-${{ matrix.arch }}.zip.
 
           ÉTAPE 1 (une seule fois, pour débloquer Gatekeeper) :
             - Ouvrez Terminal (Applications → Utilitaires → Terminal).
@@ -82,28 +108,34 @@ jobs:
           ÉTAPE 2 :
             Double-cliquez sur BlackBoxAnalyzer.app pour lancer l'app.
 
+          ARCHITECTURE :
+            Ce zip est compilé pour : ${{ matrix.arch }} (${{ matrix.arch_short }}).
+            Pour vérifier votre Mac : dans Terminal, tapez "uname -m".
+              - "arm64"  → téléchargez BlackBoxAnalyzer-macOS-AppleSilicon.zip
+              - "x86_64" → téléchargez BlackBoxAnalyzer-macOS-Intel.zip
+
           Si "blackbox_decode introuvable" apparaît :
             brew install blackbox-tools
           EOF
 
           cd dist
+          ZIPNAME="BlackBoxAnalyzer-macOS-${{ matrix.arch }}.zip"
           if [ -d "BlackBoxAnalyzer.app" ]; then
-            zip -ry BlackBoxAnalyzer-macOS.zip BlackBoxAnalyzer.app fix_mac.sh LISEZ-MOI.txt
+            zip -ry "$ZIPNAME" BlackBoxAnalyzer.app fix_mac.sh LISEZ-MOI.txt
           else
-            zip -j BlackBoxAnalyzer-macOS.zip BlackBoxAnalyzer fix_mac.sh LISEZ-MOI.txt
+            zip -j "$ZIPNAME" BlackBoxAnalyzer fix_mac.sh LISEZ-MOI.txt
           fi
           ls -la
 
       - name: Upload artifact (pour build manuel)
         uses: actions/upload-artifact@v4
         with:
-          name: BlackBoxAnalyzer-macOS
-          path: dist/BlackBoxAnalyzer-macOS.zip
+          name: BlackBoxAnalyzer-macOS-${{ matrix.arch }}
+          path: dist/BlackBoxAnalyzer-macOS-${{ matrix.arch }}.zip
 
-      # Si le workflow tourne suite à un push de tag → on attache à la Release
       - name: Attach to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/BlackBoxAnalyzer-macOS.zip
+          files: dist/BlackBoxAnalyzer-macOS-${{ matrix.arch }}.zip
           fail_on_unmatched_files: true
