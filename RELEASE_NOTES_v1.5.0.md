@@ -35,8 +35,8 @@ Deux causes identifiées et corrigées :
 Nouveau module `analysis/symptom_db.py` avec 5 règles diagnostiques complètes basées sur
 la base de connaissances DeerFlow :
 
-- **Gelo** — Oscillations nez à basse altitude / Flutter
-- **Geno** — Mouvements erratiques / Jitter toutes directions
+- **Jello** — Ondulation visible sur la vidéo (vibrations + rolling shutter, non corrigeable par Gyroflow)
+- **Jitter** — Mouvements erratiques haute fréquence sur tous les axes
 - **Slug** — Drone mou / Réponse lente
 - **Over** — Overshoot / Dépassement excessif
 - **Vib mécanique** — Vibrations non filtrées

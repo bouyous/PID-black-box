@@ -741,7 +741,7 @@ class CliDumpTab(QWidget):
 
 
 # ---------------------------------------------------------------------------
-# Onglet Symptômes (base de connaissances gelo/geno/slug/over/vib)
+# Onglet Symptômes (base de connaissances jello/jitter/slug/over/vib)
 # ---------------------------------------------------------------------------
 
 _VECTOR_COLOR: dict[CauseVector, str] = {

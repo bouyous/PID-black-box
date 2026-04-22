@@ -1,0 +1,76 @@
+name: Build Linux binary
+
+# Se déclenche :
+#   - automatiquement quand tu pushes un tag vX.Y.Z
+#   - manuellement depuis l'onglet Actions de GitHub
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write   # pour attacher l'artefact à la Release
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install system deps for PyQt6
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libgl1 libegl1 libxkbcommon0 libdbus-1-3
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      # Compile blackbox_decode pour Linux depuis les sources officielles.
+      - name: Build blackbox_decode (Linux native)
+        run: |
+          set -e
+          git clone --depth 1 https://github.com/betaflight/blackbox-tools.git /tmp/bbtools
+          cd /tmp/bbtools
+          make
+          mkdir -p "$GITHUB_WORKSPACE/tools"
+          if   [ -f obj/blackbox_decode ]; then SRCBIN=obj/blackbox_decode
+          elif [ -f bin/blackbox_decode ]; then SRCBIN=bin/blackbox_decode
+          elif [ -f blackbox_decode ];     then SRCBIN=blackbox_decode
+          else echo "blackbox_decode introuvable après make" && find . -name blackbox_decode && exit 1
+          fi
+          cp "$SRCBIN" "$GITHUB_WORKSPACE/tools/blackbox_decode"
+          chmod +x "$GITHUB_WORKSPACE/tools/blackbox_decode"
+          "$GITHUB_WORKSPACE/tools/blackbox_decode" --help | head -3 || true
+
+      - name: Build binary with PyInstaller
+        run: python build_exe.py
+
+      - name: Package as tar.gz
+        run: |
+          cd dist
+          tar -czf BlackBoxAnalyzer-Linux.tar.gz BlackBoxAnalyzer
+          ls -la
+
+      - name: Upload artifact (pour build manuel)
+        uses: actions/upload-artifact@v4
+        with:
+          name: BlackBoxAnalyzer-Linux
+          path: dist/BlackBoxAnalyzer-Linux.tar.gz
+
+      - name: Attach to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/BlackBoxAnalyzer-Linux.tar.gz
+          fail_on_unmatched_files: true

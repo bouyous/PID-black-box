@@ -75,9 +75,13 @@ Les versions compilées (`.exe` Windows, standalone — aucune installation requ
 
 **👉 [Toutes les versions — BlackBox Analyzer Releases](https://github.com/bouyous/PID-black-box/releases)**
 
-Chaque release contient :
-- L'exécutable Windows autonome (`BlackBoxAnalyzer_vX.X.X.exe`)
+Chaque release contient les 3 plateformes :
+- 🪟 **Windows** — `BlackBoxAnalyzer_vX.X.X.exe` (standalone, double-clic)
+- 🍎 **macOS** — `BlackBoxAnalyzer-macOS.zip` (Apple Silicon + Intel, dézippe et lance)
+- 🐧 **Linux** — `BlackBoxAnalyzer-Linux.tar.gz` (binaire onefile, `tar -xzf` puis `./BlackBoxAnalyzer`)
 - Les notes de version (ce qui a changé, ce qui a été corrigé)
+
+> Tous les artefacts sont construits automatiquement par GitHub Actions à chaque tag `vX.Y.Z`.
 
 > Le logiciel est en développement actif. Les versions se succèdent régulièrement.
 

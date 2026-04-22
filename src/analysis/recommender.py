@@ -73,7 +73,7 @@ class DiagnosticReport:
     summary: list[str]                    = field(default_factory=list)
     warnings: list[str]                   = field(default_factory=list)
     filter_recommendations: list[str]     = field(default_factory=list)
-    matched_symptoms: list[SymptomRule]   = field(default_factory=list)  # gelo/geno/slug/etc.
+    matched_symptoms: list[SymptomRule]   = field(default_factory=list)  # jello/jitter/slug/etc.
     drone_size: str                        = "5\""
     flying_style: str                      = "Freestyle"
     battery_cells_override: int            = 0
@@ -549,7 +549,7 @@ def generate_report(session: SessionAnalysis, cfg: FlightConfig,
 
     report.health_score = compute_health_score(session, style)
 
-    # Matching symptomatique (gelo, geno, slug, over, vib_mech)
+    # Matching symptomatique (jello, jitter, slug, over, vib_mech)
     has_osc    = any(aa.has_oscillation for aa in session.axes)
     osc_freq   = max((aa.dominant_freq_hz for aa in session.axes if aa.has_oscillation), default=0.0)
     high_d_noi = any(

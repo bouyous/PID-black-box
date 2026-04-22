@@ -3,8 +3,8 @@
     "Version": "2.0",
     "Derniere_Mise_A_Jour": "2026-04-19",
     "Symptomes": {
-      "Gelo (Oscillations Visuelles/Vibratoires)": {
-        "Definition": "Manifestation visuelle de vibrations excessives, souvent observée sur les caméras HD en vol stable. Indique un déséquilibre ou une transmission vibratoire non absorbée.",
+      "Jello (Ondulation Visuelle Vidéo)": {
+        "Definition": "Ondulation visible sur l'enregistrement vidéo, ressemblant à de la gelée qui tremble. Causée par des vibrations transmises au capteur caméra combinées au rolling shutter du capteur CMOS. Ce défaut est souvent NON corrigeable en post-traitement, même avec Gyroflow.",
         "Gravite_Minimale": ["Majeure"],
         "Diagnostic_Matériel_Physique": [
           {
@@ -79,8 +79,8 @@
           }
         ]
       },
-      "Geno (Mouvement Erratique/Instabilité en Vol)": {
-        "Definition": "Mouvements imprévisibles et brusques du drone, indiquant une perte de contrôle momentanée dans un ou plusieurs axes.",
+      "Jitter (Mouvement Erratique/Instabilité en Vol)": {
+        "Definition": "Mouvements imprévisibles et brusques du drone (jitter haute fréquence), indiquant une perte de contrôle momentanée dans un ou plusieurs axes.",
         "Gravite_Minimale": ["Critique"],
         "Diagnostic_Matériel_Physique": [
           {

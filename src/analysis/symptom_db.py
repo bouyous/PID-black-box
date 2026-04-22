@@ -1,12 +1,13 @@
 """
 Base de connaissances symptomatique pour le diagnostic Betaflight.
-Intègre les matrices de diagnostic des fichiers de référence :
-  - Gelo  : oscillations nez à basse altitude / flutter
-  - Geno  : mouvements erratiques / jitter toutes directions
-  - Slug  : drone mou, réponse lente
-  - Over  : overshoot / dépassement excessif
-  - Vib   : vibrations mécaniques non filtrées
-  - Elec  : problèmes électriques (tension, ESC, MOSFET)
+Symptômes catalogués (terminologie FPV standard) :
+  - Jello   : ondulation jelly-like visible sur la vidéo (vibrations + rolling shutter,
+              non corrigeable même par Gyroflow)
+  - Jitter  : mouvements erratiques haute fréquence / tremblements toutes directions
+  - Slug    : drone mou, réponse lente
+  - Over    : overshoot / dépassement excessif
+  - Vib     : vibrations mécaniques non filtrées
+  - Elec    : problèmes électriques (tension, ESC, MOSFET)
 
 Structure : chaque SymptomRule décode un symptôme en causes potentielles,
 tests quantifiables et actions correctives.
@@ -74,13 +75,15 @@ def _add(rule: SymptomRule) -> None:
 
 
 _add(SymptomRule(
-    symptom_id  = "gelo",
-    label_fr    = "Oscillations nez à basse altitude (Gelo / Flutter)",
-    label_en    = "Low-altitude nose oscillations / Flutter",
+    symptom_id  = "jello",
+    label_fr    = "Effet « Jello » sur la vidéo (ondulation jelly-like)",
+    label_en    = "Jello effect on video footage",
     description = (
-        "Mouvement de va-et-vient horizontal (pitch/roll) excessif et rapide, "
-        "typiquement observé près du sol ou en vol stationnaire lent. "
-        "Le drone ne maintient pas un angle stable malgré des commandes nulles."
+        "Ondulation visible sur l'enregistrement vidéo, ressemblant à de la gelée "
+        "qui tremble. Causée par des vibrations transmises au capteur caméra "
+        "combinées au rolling shutter du capteur CMOS. "
+        "Ce défaut est souvent NON corrigeable en post-traitement, même avec Gyroflow. "
+        "Indique généralement des oscillations de la cellule autour de 50–200 Hz."
     ),
     severity = "Haute",
     causes = [
@@ -143,9 +146,9 @@ _add(SymptomRule(
 ))
 
 _add(SymptomRule(
-    symptom_id  = "geno",
-    label_fr    = "Mouvements erratiques / Jitter (Geno)",
-    label_en    = "Erratic movement / Jittering in all directions",
+    symptom_id  = "jitter",
+    label_fr    = "Mouvements erratiques / Jitter haute fréquence",
+    label_en    = "Erratic movement / High-frequency jittering",
     description = (
         "Le drone vibre ou bouge de manière imprévisible et désordonnée dans "
         "toutes les directions, souvent sans cause externe apparente. "
@@ -360,13 +363,13 @@ def match_symptoms(
     """
     matched: list[SymptomRule] = []
 
-    # Gelo : oscillations structurées à basse-moyenne fréquence
+    # Jello : oscillations structurées 50–200 Hz (visibles sur la vidéo)
     if has_oscillation and 40 < oscillation_freq_hz < 200:
-        matched.append(SYMPTOM_DB['gelo'])
+        matched.append(SYMPTOM_DB['jello'])
 
-    # Geno : bruit multi-axe élevé ou D très bruité
+    # Jitter : bruit haute fréquence multi-axe ou D très bruité
     if has_oscillation and (oscillation_freq_hz > 150 or high_d_noise) and jitter_score > 0.4:
-        matched.append(SYMPTOM_DB['geno'])
+        matched.append(SYMPTOM_DB['jitter'])
 
     # Slug : réponse lente
     if slow_response:
