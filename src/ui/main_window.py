@@ -437,14 +437,18 @@ class MainWindow(QMainWindow):
         feel = self._feel_box.current_feel()
         session_analyses = []
         session_reports  = []
-        for i, df in enumerate(sessions):
-            sa = analyze(df, self._last_cfg)
-            rp = generate_report(sa, self._last_cfg, size, style, bat_cells, feel)
-            session_analyses.append(sa)
-            session_reports.append(rp)
-            tab = self._build_session_tab(df, self._last_cfg, sa, rp)
-            dur = self._duration(df)
-            self.session_tabs.addTab(tab, f"Session {i + 1}  ({dur})")
+        try:
+            for i, df in enumerate(sessions):
+                sa = analyze(df, self._last_cfg)
+                rp = generate_report(sa, self._last_cfg, size, style, bat_cells, feel)
+                session_analyses.append(sa)
+                session_reports.append(rp)
+                tab = self._build_session_tab(df, self._last_cfg, sa, rp)
+                dur = self._duration(df)
+                self.session_tabs.addTab(tab, f"Session {i + 1}  ({dur})")
+        except Exception as exc:
+            self._on_decode_error(f"Erreur lors de la construction de l'interface : {exc}")
+            return
 
         # Si référence disponible → ajouter un onglet de comparaison
         if self._reference is not None and session_analyses:

@@ -123,6 +123,17 @@ class BlackboxParser:
             shutil.copy2(bbl_path, tmp_bbl)
 
             try:
+                run_kwargs: dict = {
+                    'capture_output': True,
+                    'stdin':  subprocess.DEVNULL,   # évite le freeze stdin dans les exe --windowed
+                    'text':   True,
+                    'encoding': 'utf-8',
+                    'errors': 'replace',
+                    'cwd':    tmpdir,
+                    'timeout': 120,
+                }
+                if sys.platform.startswith('win'):
+                    run_kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
                 result = subprocess.run(
                     [
                         str(self.decoder),
@@ -131,10 +142,7 @@ class BlackboxParser:
                         '--unit-amperage', 'A',
                         str(tmp_bbl),
                     ],
-                    capture_output=True,
-                    text=True,
-                    cwd=tmpdir,
-                    timeout=120,  # 2 min max — évite le freeze infini
+                    **run_kwargs,
                 )
             except subprocess.TimeoutExpired:
                 raise ValueError(

@@ -299,7 +299,7 @@ class FftWidget(QWidget):
                 float(f_range)
             ))
             # Colormap chaud
-            cm = pg.colormap.get('inferno', source='matplotlib')
+            cm = pg.colormap.get('inferno')
             item.setColorMap(cm)
             plot.addItem(item)
             plot.setYRange(0, min(f_range, MAX_FFT_HZ))
