@@ -1,6 +1,15 @@
 # BlackBox Analyzer
 
+[![License: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/License-PolyForm_NC_1.0.0-blue.svg)](LICENSE)
+
 Logiciel desktop Windows qui lit les fichiers blackbox d'un drone FPV quadcopter sous **Betaflight 4.5+**, diagnostique les problèmes de vol, et propose des ajustements PID/filtres **expliqués en français**.
+
+> **Licence** — Ce projet est publié sous **PolyForm Noncommercial 1.0.0**.
+> Gratuit et libre pour tout usage personnel, hobbyiste, éducatif ou associatif.
+> **Tout usage commercial est interdit sans accord écrit préalable.**
+> Pour une licence commerciale : **bouyous052@gmail.com**.
+>
+> Copyright (c) 2026 bouyous — voir [LICENSE](LICENSE).
 
 L'objectif : l'utilisateur n'a pas besoin de comprendre ce que fait chaque paramètre. Il glisse le fichier blackbox, le logiciel lui dit quoi changer et pourquoi.
 
