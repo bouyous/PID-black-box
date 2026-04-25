@@ -535,7 +535,6 @@ def generate_report(session: SessionAnalysis, cfg: FlightConfig,
     _check_filters_global(session, cfg, report, style, profile, session)
     _check_betaflight_extras(session, cfg, report, style, flying_style)
     _check_cpu_and_bbl(cfg, report)
-    _check_esc_bluejay(session, cfg, report, flying_style)
     _check_electrical(session, cfg, report, style)
     _enforce_signature(cfg, report, style, profile, feel or FlightFeel.neutral())
 
@@ -1400,43 +1399,6 @@ def _check_electrical(session: SessionAnalysis, cfg: FlightConfig,
             f"fréquence détectée. Risque de desync ESC à bas régime. "
             "Réduire à 550 (5.5 %) et vérifier le timing ESC."
         )
-
-
-# ---------------------------------------------------------------------------
-# Bluejay / BLHeli_32 — recommandations ESC (info pilote, pas d'auto-apply)
-# ---------------------------------------------------------------------------
-def _check_esc_bluejay(session: SessionAnalysis, cfg: FlightConfig,
-                       report: DiagnosticReport, flying_style: str) -> None:
-    """Recommandations ESC que l'utilisateur appliquera manuellement
-    via Configurator/Bluejay. On se base sur ce qu'on peut lire du BBL
-    et sur les règles de Bluejay v0.19+."""
-    # RPM filter actif mais bidir DShot OFF → contradiction
-    if cfg.rpm_filter_harmonics > 0 and not cfg.dshot_bidir:
-        report.warnings.append(
-            "⚠️ RPM filter actif mais dshot_bidir=OFF → le FC ne reçoit "
-            "pas l'eRPM, le filtre est inopérant. Activer bidir DShot "
-            "(Bluejay ≥ 0.19 ou BLHeli_32) puis re-logger."
-        )
-
-    # Déséquilibre moteur élevé : on donne le protocole Bluejay
-    imb = session.axes[0].motor_imbalance if session.axes else 0
-    if imb > 60:
-        report.filter_recommendations.append(
-            "🔧 ESC (Bluejay recommandé) — déséquilibre moteur détecté : "
-            "vérifier Demag=High, Motor Timing=Auto/Medium (éviter High), "
-            "Startup Power 1.00–1.25, RPM Protect=ON, Variable PWM=ON."
-        )
-
-    # Conseils par style — informatifs
-    style_hint = {
-        'Freestyle':   "Bluejay : Timing=Auto, PWM 48 kHz, Demag=High, RPM Protect=ON.",
-        'Racing':      "Bluejay : Timing=Medium-High, PWM 48 kHz, Demag=High, Startup Power 1.00.",
-        'Long Range':  "Bluejay : Timing=Low, PWM 24 kHz (silence + efficience), Demag=High.",
-        'Cinewhoop':   "Bluejay : Timing=Low-Medium, PWM 24 kHz, Startup Power 1.25–1.50, Brake on Stop possible.",
-        'Bangers':     "Bluejay : Timing=Auto, PWM 48 kHz, Startup Power 1.25, RPM Protect=ON.",
-    }
-    if flying_style in style_hint:
-        report.filter_recommendations.append("💡 " + style_hint[flying_style])
 
 
 def _clamp_change(current: int, delta_ratio: float,

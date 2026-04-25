@@ -63,10 +63,12 @@ class ComparisonWidget(QWidget):
                  ref_cfg: FlightConfig, ref_name: str,
                  new_sa: SessionAnalysis, new_rp: DiagnosticReport,
                  new_cfg: FlightConfig, new_name: str,
-                 drone_size: str, flying_style: str):
+                 drone_size: str, flying_style: str,
+                 is_oscillating: bool = False):
         super().__init__()
         self.ref_rp = ref_rp
         self.new_rp = new_rp
+        self._is_oscillating = is_oscillating
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -97,7 +99,7 @@ class ComparisonWidget(QWidget):
         layout.addWidget(_sep())
 
         # Verdict global
-        layout.addWidget(self._build_verdict(ref_rp, new_rp, ref_sa, new_sa))
+        layout.addWidget(self._build_verdict(ref_rp, new_rp, ref_sa, new_sa, is_oscillating))
         layout.addWidget(_sep())
 
         # CLI dump de référence (pour revenir en arrière si besoin)
@@ -221,7 +223,8 @@ class ComparisonWidget(QWidget):
         return box
 
     def _build_verdict(self, ref_rp: DiagnosticReport, new_rp: DiagnosticReport,
-                       ref_sa: SessionAnalysis, new_sa: SessionAnalysis) -> QWidget:
+                       ref_sa: SessionAnalysis, new_sa: SessionAnalysis,
+                       is_oscillating: bool = False) -> QWidget:
         box = QWidget()
         layout = QVBoxLayout(box)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -257,10 +260,34 @@ class ComparisonWidget(QWidget):
         layout.addWidget(_lbl(f"{emoji}  {title}", bold=True, color=color, size=14))
         layout.addWidget(_lbl(detail, color='#ccc', size=11))
 
-        # Avertissement "ne pas tourner en rond"
+        # Avertissement oscillation détectée (priorité haute)
+        if is_oscillating:
+            osc_frame = QFrame()
+            osc_frame.setStyleSheet(
+                "QFrame { background:#2e1010; border-left:4px solid #e74c3c; "
+                "border-radius:4px; padding:8px; margin:4px 0; }"
+            )
+            osc_lay = QVBoxLayout(osc_frame)
+            osc_lay.setContentsMargins(8, 6, 8, 6)
+            osc_lay.setSpacing(4)
+            osc_lay.addWidget(_lbl(
+                "🔴  STOP — Vous tournez en rond",
+                bold=True, color='#e74c3c', size=13
+            ))
+            osc_lay.addWidget(_lbl(
+                "Le score monte et descend en alternance. Continuer à changer les PIDs "
+                "ne mènera nulle part. Ce que vous devez faire :\n"
+                "  1. Vérifiez mécaniquement le drone (visserie, hélices, roulements, condensateur).\n"
+                "  2. Appliquez d'abord les réglages filtres (onglet Diagnostic → Valeurs brutes).\n"
+                "  3. Volez 2 minutes en douceur, refaites une blackbox fraîche, puis comparez.",
+                color='#ffaaaa', size=11
+            ))
+            layout.addWidget(osc_frame)
+
+        # Avertissement "ne pas tourner en rond" (score stagne sans oscillation)
         n_changes_ref  = len([r for r in ref_rp.recommendations if r.suggested != r.current])
         n_changes_new  = len([r for r in new_rp.recommendations if r.suggested != r.current])
-        if n_changes_ref > 0 and n_changes_new > 0 and delta < 5:
+        if not is_oscillating and n_changes_ref > 0 and n_changes_new > 0 and delta < 5:
             layout.addWidget(_lbl(
                 "⚠️  Le logiciel propose encore des corrections alors que le score stagne. "
                 "Avant de continuer, vérifiez mécaniquement le drone "

@@ -3,9 +3,10 @@ Panel de diagnostic : contexte du vol, recommandations, CLI dump.
 """
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QSettings
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
+    QCheckBox,
     QFrame,
     QGroupBox,
     QHBoxLayout,
@@ -14,16 +15,29 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QSplitter,
     QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
-from analysis.analyzer import FlightTypeResult
+from analysis.analyzer import FlightTypeResult, SessionAnalysis
 from analysis.header_parser import FlightConfig
 from analysis.recommender import DiagnosticReport, Recommendation, Severity, AXIS_NAME
 from analysis.sliders import compute_sliders
 from analysis.symptom_db import CauseVector, RiskLevel, SymptomRule
+
+_GATE_KEY = "safety_gate_clicks"
+
+
+def _gate_auto_bypass() -> bool:
+    s = QSettings("PID-BlackBox", "BlackBoxAnalyzer")
+    return int(s.value(_GATE_KEY, 0)) >= 3
+
+
+def _increment_gate_count():
+    s = QSettings("PID-BlackBox", "BlackBoxAnalyzer")
+    s.setValue(_GATE_KEY, int(s.value(_GATE_KEY, 0)) + 1)
 
 
 def _strip_cli_comments(dump: str) -> str:
@@ -314,13 +328,30 @@ class ContextTab(QWidget):
 # ---------------------------------------------------------------------------
 
 def _build_reco_list_raw(report: DiagnosticReport) -> QWidget:
-    """Construit la vue 'Valeurs brutes' : filtres en premier, puis PIDs."""
-    inner = QWidget()
-    layout = QVBoxLayout(inner)
-    layout.setContentsMargins(8, 4, 8, 6)
-    layout.setSpacing(2)
+    """Construit la vue 'Valeurs brutes' : filtres en premier, puis PIDs.
+    Splitter vertical entre les deux sections pour redimensionner."""
 
-    # ===== FILTRES EN PREMIER =====
+    container = QWidget()
+    container_layout = QVBoxLayout(container)
+    container_layout.setContentsMargins(0, 0, 0, 0)
+    container_layout.setSpacing(0)
+
+    splitter = QSplitter(Qt.Orientation.Vertical)
+    splitter.setHandleWidth(6)
+    splitter.setStyleSheet(
+        "QSplitter::handle { background:#2a2a2a; }"
+        "QSplitter::handle:hover { background:#4a9eff; }"
+    )
+
+    # ===== FILTRES =====
+    filter_widget = QScrollArea()
+    filter_widget.setWidgetResizable(True)
+    filter_widget.setFrameShape(QFrame.Shape.NoFrame)
+    filter_inner = QWidget()
+    filter_layout = QVBoxLayout(filter_inner)
+    filter_layout.setContentsMargins(8, 4, 8, 6)
+    filter_layout.setSpacing(2)
+
     filter_cards: list[tuple[str, str]] = []
     current_note = ''
     for line in report.filter_recommendations:
@@ -332,36 +363,52 @@ def _build_reco_list_raw(report: DiagnosticReport) -> QWidget:
         current_note = ''
 
     if filter_cards:
-        layout.addWidget(_label(
+        filter_layout.addWidget(_label(
             f"🎛  Filtres — {len(filter_cards)} réglage(s)", bold=True,
             color='#3498db', size=13
         ))
-        layout.addWidget(_label(
+        filter_layout.addWidget(_label(
             "Les filtres sont la base d'un tune propre : vibrations, "
             "bruit HF, résonances.", color='#aaa', size=10))
         for cmd, note in filter_cards:
-            layout.addWidget(GenericCard(cmd, note, Severity.INFO))
-        layout.addWidget(_separator())
+            filter_layout.addWidget(GenericCard(cmd, note, Severity.INFO))
     else:
-        layout.addWidget(_label("🎛  Filtres : OK, rien à ajuster.",
-                                bold=True, color='#27ae60', size=12))
-        layout.addWidget(_separator())
+        filter_layout.addWidget(_label("🎛  Filtres : OK, rien à ajuster.",
+                                       bold=True, color='#27ae60', size=12))
+    filter_layout.addStretch()
+    filter_widget.setWidget(filter_inner)
+    splitter.addWidget(filter_widget)
 
     # ===== PIDS =====
+    pid_widget = QScrollArea()
+    pid_widget.setWidgetResizable(True)
+    pid_widget.setFrameShape(QFrame.Shape.NoFrame)
+    pid_inner = QWidget()
+    pid_layout = QVBoxLayout(pid_inner)
+    pid_layout.setContentsMargins(8, 6, 8, 6)
+    pid_layout.setSpacing(2)
+
     pid_changes = [r for r in report.recommendations if r.suggested != r.current]
     if pid_changes:
-        layout.addWidget(_label(
+        pid_layout.addWidget(_label(
             f"⚙  PID — {len(pid_changes)} ajustement(s)",
             bold=True, color='#e0e0e0', size=13
         ))
         for reco in pid_changes:
-            layout.addWidget(RecoCard(reco))
+            pid_layout.addWidget(RecoCard(reco))
     else:
-        layout.addWidget(_label("⚙  PID : OK, aucun changement nécessaire.",
-                                bold=True, color='#27ae60', size=12))
+        pid_layout.addWidget(_label("⚙  PID : OK, aucun changement nécessaire.",
+                                    bold=True, color='#27ae60', size=12))
+    pid_layout.addStretch()
+    pid_widget.setWidget(pid_inner)
+    splitter.addWidget(pid_widget)
 
-    layout.addStretch()
-    return inner
+    splitter.setStretchFactor(0, 1)
+    splitter.setStretchFactor(1, 1)
+    splitter.setSizes([350, 350])
+
+    container_layout.addWidget(splitter)
+    return container
 
 
 def _build_reco_list_sliders(report: DiagnosticReport) -> QWidget:
@@ -514,14 +561,20 @@ class RecommendationsTab(QWidget):
         from PyQt6.QtWidgets import QStackedWidget
         self.report = report
         self.stack = QStackedWidget()
-        self.stack.addWidget(_build_safety_gate(
-            lambda: self.stack.setCurrentIndex(1)
-        ))
-        self.stack.addWidget(self._build_content_page(report))
+
+        if _gate_auto_bypass():
+            self.stack.addWidget(self._build_content_page(report))
+        else:
+            self.stack.addWidget(_build_safety_gate(self._on_gate_accepted))
+            self.stack.addWidget(self._build_content_page(report))
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.addWidget(self.stack)
+
+    def _on_gate_accepted(self):
+        _increment_gate_count()
+        self.stack.setCurrentIndex(1)
 
     def _build_content_page(self, report: DiagnosticReport) -> QWidget:
         w = QWidget()
@@ -539,17 +592,26 @@ class RecommendationsTab(QWidget):
             "QPushButton:hover { background:#3a3a3a; }"
         )
         back.setMaximumHeight(22)
+        # Si bypass actif, la gate n'existe pas (index 0 = contenu) → masquer le bouton
+        back.setVisible(not _gate_auto_bypass())
         back.clicked.connect(lambda: self.stack.setCurrentIndex(0))
         back_row.addWidget(back)
         back_row.addStretch()
         outer.addLayout(back_row)
 
-        # Header summary + warnings : compacté dans un scroll à hauteur limitée
-        # pour laisser la zone réglages remonter et prendre plus d'espace.
+        # Splitter vertical : header (résumé / warnings) ↔ encarts réglages.
+        # L'utilisateur peut tirer la poignée pour agrandir l'une ou l'autre zone
+        # et arrêter de scroller.
+        splitter = QSplitter(Qt.Orientation.Vertical)
+        splitter.setHandleWidth(6)
+        splitter.setStyleSheet(
+            "QSplitter::handle { background:#2a2a2a; }"
+            "QSplitter::handle:hover { background:#4a9eff; }"
+        )
+
         header_scroll = QScrollArea()
         header_scroll.setWidgetResizable(True)
         header_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        header_scroll.setMaximumHeight(110)   # plafond haut de la zone info
         header_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
         header = QWidget()
@@ -561,16 +623,13 @@ class RecommendationsTab(QWidget):
         for warn in report.warnings:
             hlay.addWidget(_label(f"⚠️  {warn}", color='#f39c12', size=9))
         header_scroll.setWidget(header)
-        outer.addWidget(header_scroll)
+        splitter.addWidget(header_scroll)
 
         sub = QTabWidget()
         sub.setStyleSheet("QTabBar::tab { padding: 4px 14px; }")
 
-        scroll_raw = QScrollArea()
-        scroll_raw.setWidgetResizable(True)
-        scroll_raw.setFrameShape(QFrame.Shape.NoFrame)
-        scroll_raw.setWidget(_build_reco_list_raw(report))
-        sub.addTab(scroll_raw, "Valeurs brutes")
+        # Vue brute : contient déjà son propre splitter Filtres/PID + scrolls
+        sub.addTab(_build_reco_list_raw(report), "Valeurs brutes")
 
         scroll_sl = QScrollArea()
         scroll_sl.setWidgetResizable(True)
@@ -578,7 +637,12 @@ class RecommendationsTab(QWidget):
         scroll_sl.setWidget(_build_reco_list_sliders(report))
         sub.addTab(scroll_sl, "Sliders PID")
 
-        outer.addWidget(sub)
+        splitter.addWidget(sub)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([100, 600])
+
+        outer.addWidget(splitter)
         return w
 
 
@@ -595,8 +659,11 @@ class CliDumpTab(QWidget):
         from PyQt6.QtWidgets import QStackedWidget
         self.stack = QStackedWidget()
 
-        self.stack.addWidget(self._build_gate_page())
-        self.stack.addWidget(self._build_dump_page())
+        if _gate_auto_bypass():
+            self.stack.addWidget(self._build_dump_page())
+        else:
+            self.stack.addWidget(self._build_gate_page())
+            self.stack.addWidget(self._build_dump_page())
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -668,9 +735,13 @@ class CliDumpTab(QWidget):
             " padding:12px 20px; border-radius:6px; font-size:14px; font-weight:bold; }"
             "QPushButton:hover { background:#3a7050; }"
         )
-        btn.clicked.connect(lambda: self.stack.setCurrentIndex(1))
+        btn.clicked.connect(self._on_cli_gate_accepted)
         lay.addWidget(btn, alignment=Qt.AlignmentFlag.AlignCenter)
         return w
+
+    def _on_cli_gate_accepted(self):
+        _increment_gate_count()
+        self.stack.setCurrentIndex(1)
 
     # -- Page 2 : dump copiable --
     def _build_dump_page(self) -> QWidget:
@@ -687,6 +758,7 @@ class CliDumpTab(QWidget):
             " padding:4px 10px; border-radius:4px; }"
             "QPushButton:hover { background:#3a3a3a; }"
         )
+        back.setVisible(not _gate_auto_bypass())
         back.clicked.connect(lambda: self.stack.setCurrentIndex(0))
         top.addWidget(back)
 
@@ -898,13 +970,264 @@ class SymptomTab(QWidget):
 
 
 # ---------------------------------------------------------------------------
+# Onglet Check OK — checklist hardware pré-réglage
+# ---------------------------------------------------------------------------
+
+_STATUS_BADGE = {
+    'ok':       ('✅', '#27ae60', '#1a2e22', 'OK'),
+    'warning':  ('⚠️',  '#f39c12', '#2e2410', 'À VÉRIFIER'),
+    'critical': ('🔴', '#e74c3c', '#2e1010', 'PROBLÈME'),
+    'unknown':  ('❔', '#888',    '#1e1e1e', 'NON DÉTECTABLE'),
+}
+
+
+def _evaluate_hardware(sa: SessionAnalysis | None,
+                       cfg: FlightConfig) -> list[tuple[str, str, str, str]]:
+    """Auto-diagnostic hardware à partir de l'analyse blackbox.
+    Retourne une liste de (icon, title, status, detail).
+    status ∈ {'ok','warning','critical','unknown'}."""
+    if sa is None or not sa.axes:
+        return []
+
+    axes_rp = sa.axes[:2]   # Roll & Pitch (Yaw moins fiable mécaniquement)
+
+    # Stats agrégées
+    imb = max((aa.motor_imbalance for aa in axes_rp), default=0.0)
+    avg_hf = sum(aa.hf_noise_ratio for aa in axes_rp) / max(len(axes_rp), 1)
+    sag = sa.battery_sag_v_per_cell
+    has_low_freq_osc = any(0 < aa.dominant_freq_hz < 30 and aa.has_oscillation
+                           for aa in axes_rp)
+
+    # Pics structurels (non couverts RPM, hors harmoniques moteur)
+    structural_peaks = sum(
+        1 for aa in axes_rp for p in aa.vibration_peaks
+        if not p.covered_by_rpm_filter and p.harmonic == 0 and 100 < p.freq_hz < 500
+    )
+    # Pics liés aux hélices (harmoniques RPM non filtrées)
+    prop_peaks = sum(
+        1 for aa in axes_rp for p in aa.vibration_peaks
+        if not p.covered_by_rpm_filter and p.harmonic > 0
+    )
+
+    out: list[tuple[str, str, str, str]] = []
+
+    # 1. Visserie du châssis
+    if structural_peaks >= 4:
+        out.append(("🔩", "Visserie du châssis", "critical",
+                    f"{structural_peaks} pics de vibration structurelle non filtrés "
+                    f"(100–500 Hz). Frame probablement desserrée — resserrer toute la visserie "
+                    f"(bras, top plate, stack, moteurs)."))
+    elif structural_peaks >= 2:
+        out.append(("🔩", "Visserie du châssis", "warning",
+                    f"{structural_peaks} pic(s) de résonance dans la bande structurelle. "
+                    f"Vérifier le serrage des vis de la frame."))
+    else:
+        out.append(("🔩", "Visserie du châssis", "ok",
+                    "Aucune résonance structurelle suspecte. Frame saine."))
+
+    # 2. Hélices
+    if imb > 80 or prop_peaks >= 3:
+        out.append(("🪁", "Hélices", "critical",
+                    f"Déséquilibre fort (σ={imb:.0f}) ou {prop_peaks} pics RPM non filtrés. "
+                    f"Au moins une hélice est abîmée, déséquilibrée ou mal serrée."))
+    elif imb > 50 or prop_peaks >= 1:
+        out.append(("🪁", "Hélices", "warning",
+                    f"Léger déséquilibre (σ={imb:.0f}). "
+                    f"Vérifier l'état visuel et l'équilibrage des hélices."))
+    else:
+        out.append(("🪁", "Hélices", "ok",
+                    f"Hélices bien équilibrées (σ={imb:.0f})."))
+
+    # 3. Roulements moteur
+    if imb > 100:
+        out.append(("🔧", "Roulements moteur", "critical",
+                    f"Déséquilibre extrême (σ={imb:.0f}). Suspicion de roulement HS. "
+                    f"Faire tourner chaque moteur à la main : résistance ou cliquetis = à remplacer."))
+    elif imb > 60:
+        out.append(("🔧", "Roulements moteur", "warning",
+                    f"Déséquilibre moteur élevé (σ={imb:.0f}). "
+                    f"Tester chaque moteur à la main pour identifier le roulement fatigué."))
+    else:
+        out.append(("🔧", "Roulements moteur", "ok",
+                    "Pas de signe de roulement défectueux."))
+
+    # 4. Condensateur d'alimentation
+    if sag > 0.5 and has_low_freq_osc:
+        out.append(("⚡", "Condensateur d'alimentation", "critical",
+                    f"Sag {sag:.2f} V/cell + oscillations basse fréquence détectées. "
+                    f"Condensateur 1 000–2 000 µF / 35 V probablement absent, mort ou sous-dimensionné."))
+    elif sag > 0.4:
+        out.append(("⚡", "Condensateur d'alimentation", "warning",
+                    f"Sag batterie {sag:.2f} V/cell. "
+                    f"Vérifier la présence et l'état du condensateur sur les pads batterie ESC."))
+    elif sag > 0:
+        out.append(("⚡", "Condensateur d'alimentation", "ok",
+                    f"Sag batterie normal ({sag:.2f} V/cell). Condensateur efficace."))
+    else:
+        out.append(("⚡", "Condensateur d'alimentation", "unknown",
+                    "Données vbat insuffisantes pour évaluer l'alimentation."))
+
+    # 5. Silentblocs FC
+    if avg_hf > 0.12:
+        out.append(("🧲", "Montage FC (silentblocs)", "critical",
+                    f"Bruit gyro HF élevé ({avg_hf*100:.0f}%). "
+                    f"Silentblocs trop durs ou FC en contact direct avec la frame."))
+    elif avg_hf > 0.08:
+        out.append(("🧲", "Montage FC (silentblocs)", "warning",
+                    f"Bruit gyro HF modéré ({avg_hf*100:.0f}%). "
+                    f"Envisager des silentblocs plus mous (Shore 30–40 A)."))
+    else:
+        out.append(("🧲", "Montage FC (silentblocs)", "ok",
+                    f"Bruit HF gyro dans la norme ({avg_hf*100:.0f}%). FC bien isolée."))
+
+    # 6. Connecteur batterie (XT60)
+    if sag > 0.7:
+        out.append(("🔋", "Connecteur batterie (XT60)", "critical",
+                    f"Sag très élevé ({sag:.2f} V/cell). "
+                    f"Connecteur XT60 probablement oxydé/brûlé OU batterie en fin de vie."))
+    elif sag > 0.5:
+        out.append(("🔋", "Connecteur batterie (XT60)", "warning",
+                    f"Sag élevé ({sag:.2f} V/cell). Inspecter le XT60 et l'état de la batterie."))
+    elif sag > 0:
+        out.append(("🔋", "Connecteur batterie (XT60)", "ok",
+                    "Connecteur batterie sain."))
+    else:
+        out.append(("🔋", "Connecteur batterie (XT60)", "unknown",
+                    "Données vbat insuffisantes pour évaluer le connecteur."))
+
+    # 7. Récepteur / antennes — non détectable
+    out.append(("📡", "Récepteur et antennes", "unknown",
+                "Non détectable depuis la blackbox. À vérifier visuellement : "
+                "antennes droites, non coincées dans la frame, récepteur fixé."))
+
+    return out
+
+
+class CheckOKTab(QWidget):
+    def __init__(self, report: DiagnosticReport, sa: SessionAnalysis | None,
+                 cfg: FlightConfig):
+        super().__init__()
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+
+        inner = QWidget()
+        layout = QVBoxLayout(inner)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+
+        results = _evaluate_hardware(sa, cfg)
+
+        # Compteurs
+        n_crit = sum(1 for _, _, st, _ in results if st == 'critical')
+        n_warn = sum(1 for _, _, st, _ in results if st == 'warning')
+        n_ok   = sum(1 for _, _, st, _ in results if st == 'ok')
+
+        # Bannière de synthèse
+        banner = QFrame()
+        if n_crit > 0:
+            banner_bg, banner_color = '#2e1010', '#e74c3c'
+            banner_title = f"🔴  {n_crit} problème(s) hardware critique(s) détecté(s)"
+            banner_text = ("Avant de toucher aux PIDs, traitez les points marqués en rouge — "
+                           "ils empêcheront tout réglage stable.")
+        elif n_warn > 0:
+            banner_bg, banner_color = '#2e2410', '#f39c12'
+            banner_title = f"⚠️  {n_warn} point(s) hardware à vérifier"
+            banner_text = ("Le drone est peut-être pilotable mais des éléments demandent "
+                           "une vérification physique avant ou après le réglage PID.")
+        else:
+            banner_bg, banner_color = '#1a2e22', '#27ae60'
+            banner_title = f"✅  Hardware OK — {n_ok} point(s) validé(s)"
+            banner_text = ("Aucun problème mécanique ou électrique détectable depuis cette "
+                           "blackbox. Vous pouvez passer aux réglages PID en confiance.")
+
+        banner.setStyleSheet(
+            f"QFrame {{ background:{banner_bg}; border-left:4px solid {banner_color}; "
+            f"border-radius:4px; padding:8px; }}"
+        )
+        bl = QVBoxLayout(banner)
+        bl.setContentsMargins(8, 6, 8, 6)
+        bl.setSpacing(4)
+        bl.addWidget(_label(banner_title, bold=True, color=banner_color, size=13))
+        bl.addWidget(_label(banner_text, color='#ccc', size=11))
+        layout.addWidget(banner)
+
+        layout.addWidget(_label(
+            "Diagnostic automatique — déterminé à partir de la blackbox, pas de "
+            "l'utilisateur. Les coches reflètent ce que l'analyse a observé.",
+            color='#888', size=10
+        ))
+        layout.addWidget(_separator())
+
+        if not results:
+            layout.addWidget(_label(
+                "Données d'analyse indisponibles pour le check hardware.",
+                color='#888', size=11))
+        else:
+            for icon, title, status, detail in results:
+                layout.addWidget(self._make_item(icon, title, status, detail))
+
+        layout.addStretch()
+        scroll.setWidget(inner)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(scroll)
+
+    @staticmethod
+    def _make_item(icon: str, title: str, status: str, detail: str) -> QFrame:
+        badge_icon, color, bg, badge_text = _STATUS_BADGE[status]
+
+        frame = QFrame()
+        frame.setStyleSheet(
+            f"QFrame {{ background:{bg}; border-left:3px solid {color}; "
+            f"border-radius:4px; margin:2px 0; }}"
+        )
+        hl = QHBoxLayout(frame)
+        hl.setContentsMargins(10, 8, 10, 8)
+        hl.setSpacing(12)
+
+        # Icône statut (gros)
+        status_lbl = QLabel(badge_icon)
+        status_lbl.setStyleSheet(f"color:{color}; font-size:22px;")
+        status_lbl.setFixedWidth(34)
+        status_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignTop)
+        hl.addWidget(status_lbl)
+
+        # Texte central : titre + détail
+        vl = QVBoxLayout()
+        vl.setSpacing(2)
+
+        title_row = QHBoxLayout()
+        title_row.setContentsMargins(0, 0, 0, 0)
+        title_row.setSpacing(6)
+        title_row.addWidget(_label(f"{icon}  {title}", bold=True, color='#e0e0e0', size=12))
+        badge = QLabel(badge_text)
+        badge.setStyleSheet(
+            f"color:{color}; background:rgba(0,0,0,0.25); border:1px solid {color}; "
+            f"border-radius:3px; padding:1px 6px; font-size:9px; font-weight:bold;"
+        )
+        title_row.addWidget(badge)
+        title_row.addStretch()
+        vl.addLayout(title_row)
+
+        detail_lbl = _label(detail, color='#aaa', size=10)
+        detail_lbl.setWordWrap(True)
+        vl.addWidget(detail_lbl)
+        hl.addLayout(vl, stretch=1)
+
+        return frame
+
+
+# ---------------------------------------------------------------------------
 # Widget principal de diagnostic (regroupe les 4 onglets)
 # ---------------------------------------------------------------------------
 
 class DiagnosticWidget(QWidget):
     def __init__(self, cfg: FlightConfig, report: DiagnosticReport,
                  drone_size: str,
-                 flight_type: FlightTypeResult | None = None):
+                 flight_type: FlightTypeResult | None = None,
+                 sa: SessionAnalysis | None = None):
         super().__init__()
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -913,6 +1236,7 @@ class DiagnosticWidget(QWidget):
         tabs.addTab(ContextTab(cfg, drone_size, flight_type), "📋  Contexte")
         tabs.addTab(RecommendationsTab(report),          "🔍  Diagnostic")
         tabs.addTab(SymptomTab(report),                  "🩺  Symptômes")
+        tabs.addTab(CheckOKTab(report, sa, cfg),         "✅  Check OK")
         tabs.addTab(CliDumpTab(report),                  "💻  CLI Dump")
 
         # Aller directement au diagnostic s'il y a des problèmes

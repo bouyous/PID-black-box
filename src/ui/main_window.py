@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import (
     QMainWindow,
     QPushButton,
     QSlider,
+    QSplitter,
     QStatusBar,
     QTabWidget,
     QVBoxLayout,
@@ -94,26 +95,17 @@ QPushButton:disabled { color: #555; border-color: #333; }
 
 
 class FeelSlidersBox(QFrame):
-    """4 sliders 1..5 pour capter le ressenti du pilote.
-    3 = neutre (respecte juste le style). S'écarter de 3 biaise les recos."""
+    """4 sliders 1..5 pour capter le ressenti du pilote. 3 = neutre."""
 
     SLIDERS = [
-        # (attr, title, left_label, right_label, tooltip)
-        ('locked',          "Ressenti locké",
-         "flou / libre", "ultra locké",
-         "Comment vous vouliez que le drone se comporte sur les sticks.\n"
-         "Plus vers 5 = FF et D poussés pour être « rivé »."),
-        ('wind_stability',  "Stabilité au vent",
-         "peu important", "imperturbable",
-         "Plus vers 5 = I plus haut, dérive traquée de plus près.\n"
-         "Utile en Long Range."),
-        ('responsiveness',  "Réactivité sticks",
-         "doux", "vif",
-         "Plus vers 5 = temps de montée plus serré (P/FF poussés).\n"
-         "Autorise un peu plus d'overshoot."),
-        ('propwash_clean',  "Propreté post-manœuvre",
-         "tolère", "impeccable",
-         "Plus vers 5 = D_min remonté, cible prop wash resserrée."),
+        ('locked',         "🔒  Locké",          "flou",    "rivé",
+         "Plus vers 5 = FF et D poussés — drone vissé aux sticks."),
+        ('wind_stability', "💨  Stabilité vent",  "peu",     "imperturbable",
+         "Plus vers 5 = I plus haut, dérive traquée de plus près. Utile en LR."),
+        ('responsiveness', "⚡  Réactivité",      "doux",    "vif",
+         "Plus vers 5 = temps de montée plus court (P/FF poussés)."),
+        ('propwash_clean', "✨  Propreté",        "tolère",  "impeccable",
+         "Plus vers 5 = D_min remonté, prop wash resserré."),
     ]
 
     def __init__(self):
@@ -121,47 +113,71 @@ class FeelSlidersBox(QFrame):
         self.setFrameShape(QFrame.Shape.StyledPanel)
         self.setStyleSheet(
             "FeelSlidersBox { background:#1f1f1f; border:1px solid #333; border-radius:4px; }"
-            "QLabel { color:#bbb; font-size:11px; }"
-            "QSlider::groove:horizontal { height:4px; background:#333; border-radius:2px; }"
-            "QSlider::sub-page:horizontal { background:#4a9eff; border-radius:2px; }"
+            "QSlider::groove:horizontal { height:6px; background:#333; border-radius:3px; }"
+            "QSlider::sub-page:horizontal { background:#4a9eff; border-radius:3px; }"
+            "QSlider::add-page:horizontal { background:#2a2a2a; border-radius:3px; }"
             "QSlider::handle:horizontal {"
-            " background:#4a9eff; width:12px; margin:-5px 0; border-radius:6px; }"
+            " background:#4a9eff; width:16px; margin:-6px 0; border-radius:8px;"
+            " border:2px solid #1f1f1f; }"
+            "QSlider::handle:horizontal:hover { background:#6cb0ff; }"
         )
         grid = QGridLayout(self)
-        grid.setContentsMargins(8, 4, 8, 4)
-        grid.setHorizontalSpacing(10)
-        grid.setVerticalSpacing(2)
+        grid.setContentsMargins(12, 8, 12, 8)
+        grid.setHorizontalSpacing(12)
+        grid.setVerticalSpacing(6)
 
         title = QLabel("Ressenti en vol  (3 = neutre)")
-        title.setStyleSheet("color:#888; font-size:10px;")
-        grid.addWidget(title, 0, 0, 1, 4)
+        title.setStyleSheet(
+            "color:#bbb; font-size:14px; font-weight:bold; letter-spacing:1px;"
+        )
+        grid.addWidget(title, 0, 0, 1, 5)
 
         self._sliders: dict[str, QSlider] = {}
+        self._value_labels: dict[str, QLabel] = {}
         for row, (attr, label, lo_lbl, hi_lbl, tt) in enumerate(self.SLIDERS, start=1):
             name = QLabel(label)
             name.setToolTip(tt)
-            name.setFixedWidth(150)
+            name.setMinimumWidth(160)
+            name.setStyleSheet("color:#e0e0e0; font-size:13px; font-weight:600;")
             grid.addWidget(name, row, 0)
 
             lo = QLabel(lo_lbl)
-            lo.setStyleSheet("color:#666; font-size:10px;")
+            lo.setStyleSheet("color:#888; font-size:12px;")
             lo.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            lo.setMinimumWidth(80)
             grid.addWidget(lo, row, 1)
 
             s = QSlider(Qt.Orientation.Horizontal)
             s.setMinimum(1)
             s.setMaximum(5)
             s.setValue(3)
-            s.setFixedWidth(90)
+            s.setMinimumWidth(160)
             s.setToolTip(tt)
             s.setTickPosition(QSlider.TickPosition.TicksBelow)
             s.setTickInterval(1)
+            s.valueChanged.connect(lambda v, a=attr: self._on_changed(a, v))
             grid.addWidget(s, row, 2)
             self._sliders[attr] = s
 
             hi = QLabel(hi_lbl)
-            hi.setStyleSheet("color:#666; font-size:10px;")
+            hi.setStyleSheet("color:#888; font-size:12px;")
+            hi.setMinimumWidth(110)
             grid.addWidget(hi, row, 3)
+
+            val = QLabel("3")
+            val.setStyleSheet(
+                "color:#4a9eff; font-size:16px; font-weight:bold;"
+                " background:#2a2a2a; border:1px solid #444; border-radius:4px;"
+                " padding:2px 10px; min-width:24px;"
+            )
+            val.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            grid.addWidget(val, row, 4)
+            self._value_labels[attr] = val
+
+        grid.setColumnStretch(2, 1)
+
+    def _on_changed(self, attr: str, value: int):
+        self._value_labels[attr].setText(str(value))
 
     def current_feel(self) -> FlightFeel:
         return FlightFeel(
@@ -235,9 +251,11 @@ class MainWindow(QMainWindow):
         self.parser = BlackboxParser()
         self._last_cfg: FlightConfig | None = None
         self._worker:  DecodeWorker | None = None   # thread en cours
+        self._has_loaded = False  # premier chargement réussi → affiche les contrôles
 
         # Référence pour comparaison avant/après
         self._reference: dict | None = None   # {file, sessions, analyses, reports, cfg, size, style}
+        self._score_history: list[int] = []   # scores dans l'ordre : ref puis sessions comparées
 
         self.setWindowTitle("BlackBox Analyzer")
         self.resize(1280, 800)
@@ -260,24 +278,35 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         root = QVBoxLayout(central)
         root.setContentsMargins(10, 10, 10, 6)
-        root.setSpacing(6)
+        root.setSpacing(0)
 
-        # --- Barre supérieure ---
+        # --- Splitter vertical : zone contrôles | onglets sessions ---
+        splitter = QSplitter(Qt.Orientation.Vertical)
+        splitter.setHandleWidth(5)
+        splitter.setStyleSheet("QSplitter::handle { background:#2a2a2a; }")
+
+        # ---- Zone contrôles (panneau haut) ----
+        ctrl_widget = QWidget()
+        ctrl_layout = QVBoxLayout(ctrl_widget)
+        ctrl_layout.setContentsMargins(0, 0, 0, 6)
+        ctrl_layout.setSpacing(5)
+
+        # Ligne 1 : drop area + sélecteurs (sélecteurs cachés avant load)
         top_bar = QHBoxLayout()
-
         self.drop_area = DropArea()
         self.drop_area.file_dropped.connect(self._on_file_dropped)
         top_bar.addWidget(self.drop_area, stretch=1)
 
-        # Sélecteur taille drone (pas d'auto-refresh — on attend clic Appliquer)
-        top_bar.addWidget(self._make_selector_box(
+        self._selectors_widget = QWidget()
+        sel_layout = QHBoxLayout(self._selectors_widget)
+        sel_layout.setContentsMargins(0, 0, 0, 0)
+        sel_layout.setSpacing(0)
+        sel_layout.addWidget(self._make_selector_box(
             "Taille drone", DRONE_SIZES, '5"',
             "3\" : ±45%\n5\" : ±25%\n6\" : ±35%\n7\" : ±45%\n10\" : ±55%",
             '_size_combo'
         ))
-
-        # Sélecteur style de vol
-        top_bar.addWidget(self._make_selector_box(
+        sel_layout.addWidget(self._make_selector_box(
             "Style de vol", FLYING_STYLES, 'Freestyle',
             "Freestyle : drone hyper loqué, FF agressif\n"
             "Racing : réactivité max, tracking serré\n"
@@ -285,48 +314,44 @@ class MainWindow(QMainWindow):
             "Bangers : tolérant (indoor, crash probable)",
             '_style_combo'
         ))
-
-        # Sélecteur batterie
-        top_bar.addWidget(self._make_selector_box(
+        sel_layout.addWidget(self._make_selector_box(
             "Batterie", BATTERY_OPTIONS, 'Auto',
             "Auto = détecté depuis la tension BBL\n"
             "Forcer si le vol de test n'était pas sur la batterie habituelle",
             '_battery_combo'
         ))
+        self._selectors_widget.setVisible(False)
+        top_bar.addWidget(self._selectors_widget)
+        ctrl_layout.addLayout(top_bar)
 
-        root.addLayout(top_bar)
-
-        # --- Ressenti pilote (sliders 1-5) ---
-        feel_bar = QHBoxLayout()
-        feel_bar.setContentsMargins(0, 0, 0, 0)
+        # Ressenti en vol (caché avant load)
         self._feel_box = FeelSlidersBox()
-        feel_bar.addWidget(self._feel_box, stretch=1)
-        root.addLayout(feel_bar)
+        self._feel_box.setVisible(False)
+        ctrl_layout.addWidget(self._feel_box)
 
-        # --- Bouton Appliquer (grand, pleine largeur) ---
+        # Bouton Appliquer (caché avant load)
         self._btn_apply = QPushButton("✓  Appliquer le profil et le ressenti")
         self._btn_apply.setToolTip(
             "Recalcule le diagnostic en combinant :\n"
             "  • Taille / Style / Batterie ci-dessus\n"
-            "  • Les 4 sliders de ressenti en vol\n"
-            "Chaque cran de slider ou changement de style produit "
-            "au moins un ajustement."
+            "  • Les 4 boutons de ressenti en vol\n"
+            "Chaque changement produit au moins un ajustement."
         )
-        self._btn_apply.setMinimumHeight(40)
+        self._btn_apply.setMinimumHeight(38)
         self._btn_apply.setStyleSheet(
             "QPushButton { background:#2d5a3d; color:#fff;"
             " border:1px solid #3e7a55; border-radius:4px;"
-            " padding:8px 18px; font-weight:bold; font-size:14px; }"
+            " padding:6px 18px; font-weight:bold; font-size:13px; }"
             "QPushButton:hover { background:#3a7050; border-color:#5aa078; }"
             "QPushButton:pressed { background:#245033; }"
-            "QPushButton:disabled { background:#252525; color:#555;"
-            " border-color:#333; }"
+            "QPushButton:disabled { background:#252525; color:#555; border-color:#333; }"
         )
         self._btn_apply.setEnabled(False)
         self._btn_apply.clicked.connect(self._on_profile_changed)
-        root.addWidget(self._btn_apply)
+        self._btn_apply.setVisible(False)
+        ctrl_layout.addWidget(self._btn_apply)
 
-        # --- Bouton comparer ---
+        # Barre inférieure : référence + ouvrir
         cmp_bar = QHBoxLayout()
         self._btn_set_ref = QPushButton("💾  Définir comme référence")
         self._btn_set_ref.setToolTip(
@@ -334,11 +359,13 @@ class MainWindow(QMainWindow):
             "Chargez ensuite un nouveau vol pour comparer avant/après."
         )
         self._btn_set_ref.setEnabled(False)
+        self._btn_set_ref.setVisible(False)
         self._btn_set_ref.clicked.connect(self._set_as_reference)
         cmp_bar.addWidget(self._btn_set_ref)
 
         self._ref_label = QLabel("")
         self._ref_label.setStyleSheet("color:#4a9eff; font-size:11px;")
+        self._ref_label.setVisible(False)
         cmp_bar.addWidget(self._ref_label)
         cmp_bar.addStretch()
 
@@ -346,13 +373,19 @@ class MainWindow(QMainWindow):
         self._btn_load_compare.setToolTip("Ouvrir un fichier BBL via l'explorateur")
         self._btn_load_compare.clicked.connect(self._open_file_dialog)
         cmp_bar.addWidget(self._btn_load_compare)
+        ctrl_layout.addLayout(cmp_bar)
 
-        root.addLayout(cmp_bar)
+        splitter.addWidget(ctrl_widget)
 
-        # --- Onglets sessions ---
+        # ---- Onglets sessions (panneau bas) ----
         self.session_tabs = QTabWidget()
         self.session_tabs.setVisible(False)
-        root.addWidget(self.session_tabs, stretch=1)
+        splitter.addWidget(self.session_tabs)
+
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+
+        root.addWidget(splitter)
 
         self.status = QStatusBar()
         self.setStatusBar(self.status)
@@ -478,6 +511,15 @@ class MainWindow(QMainWindow):
         self._btn_set_ref.setEnabled(True)
         self._btn_apply.setEnabled(True)
 
+        # Premier chargement réussi → révèle les contrôles masqués
+        if not self._has_loaded:
+            self._has_loaded = True
+            self._selectors_widget.setVisible(True)
+            self._feel_box.setVisible(True)
+            self._btn_apply.setVisible(True)
+            self._btn_set_ref.setVisible(True)
+            self._ref_label.setVisible(True)
+
     def _on_profile_changed(self, _=None):
         """Relance l'analyse si un fichier est déjà chargé."""
         if self._last_cfg is None or self.session_tabs.count() == 0:
@@ -507,7 +549,8 @@ class MainWindow(QMainWindow):
             feel = self._feel_box.current_feel()
             rp = generate_report(sa, self._last_cfg, size, style, bat_cells, feel)
             new_diag = DiagnosticWidget(self._last_cfg, rp, size,
-                                        flight_type=getattr(sa, 'flight_type', None))
+                                        flight_type=getattr(sa, 'flight_type', None),
+                                        sa=sa)
             inner_tabs.removeTab(diag_idx)
             inner_tabs.insertTab(diag_idx, new_diag, "Diagnostic")
             inner_tabs.setCurrentIndex(diag_idx)
@@ -525,6 +568,8 @@ class MainWindow(QMainWindow):
             return
         ctx = self._current_context
         self._reference = dict(ctx)
+        ref_score = ctx['reports'][0].health_score if ctx['reports'] else 0
+        self._score_history = [ref_score]   # réinitialise l'historique à chaque nouvelle référence
         self._ref_label.setText(
             f"Référence : {ctx['file']}  ({ctx['size']} / {ctx['style']})"
         )
@@ -543,11 +588,25 @@ class MainWindow(QMainWindow):
             w = QWidget()
             QVBoxLayout(w).addWidget(QLabel("Données de référence incomplètes."))
             return w
+
+        # Mise à jour de l'historique des scores et détection d'oscillation
+        self._score_history.append(new_rp.health_score)
+        is_oscillating = self._detect_oscillation()
+
         return ComparisonWidget(
             ref_sa, ref_rp, ref['cfg'], ref['file'],
             new_sa, new_rp, new_cfg, new_name,
-            size, style
+            size, style,
+            is_oscillating=is_oscillating
         )
+
+    def _detect_oscillation(self) -> bool:
+        h = self._score_history
+        if len(h) < 3:
+            return False
+        a, b, c = h[-3], h[-2], h[-1]
+        # Monte puis descend, ou descend puis monte (rebond de ≥3 pts)
+        return (b - a >= 3 and b - c >= 3) or (a - b >= 3 and c - b >= 3)
 
     # ------------------------------------------------------------------
     # Construction des onglets par session
@@ -570,7 +629,7 @@ class MainWindow(QMainWindow):
             inner.addTab(MotorPlotWidget(df), "Moteurs")
         inner.addTab(FftWidget(df, cfg), "FFT")
         inner.addTab(DiagnosticWidget(cfg, rp, self._size_combo.currentText(),
-                                      flight_type=sa.flight_type), "Diagnostic")
+                                      flight_type=sa.flight_type, sa=sa), "Diagnostic")
 
         layout.addWidget(inner)
         return widget
