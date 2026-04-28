@@ -22,7 +22,9 @@ from PyQt6.QtWidgets import (
 
 from analysis.analyzer import SessionAnalysis, analyze
 from analysis.header_parser import FlightConfig, parse_header
-from analysis.recommender import DiagnosticReport, FlightFeel, generate_report
+from analysis.recommender import (
+    DiagnosticReport, FlightFeel, MotorTemp, PilotFeedback, generate_report,
+)
 from parser.blackbox_parser import BlackboxParser
 from ui.comparison_widget import ComparisonWidget
 from ui.fft_widget import FftWidget
@@ -192,6 +194,209 @@ class FeelSlidersBox(QFrame):
             s.setValue(3)
 
 
+class PilotFeedbackBox(QFrame):
+    """5 questions oui/non posées au pilote après le vol de test.
+    Le bloc CLI final n'est généré qu'une fois les 5 réponses fournies."""
+
+    QUESTIONS = [
+        ('improved',        "Y a-t-il eu une amélioration ?"),
+        ('has_rebounds',    "Y a-t-il des rebonds (gaz / sortie virage) ?"),
+        ('has_propwash',    "Y a-t-il encore du propwash ?"),
+        ('locked_enough',   "Le drone est-il suffisamment locké ?"),
+        ('reactive_enough', "Le drone est-il suffisamment réactif ?"),
+    ]
+
+    feedback_changed = pyqtSignal()
+
+    def __init__(self):
+        super().__init__()
+        self._answers: dict[str, bool | None] = {q: None for q, _ in self.QUESTIONS}
+        self._buttons: dict[str, tuple[QPushButton, QPushButton]] = {}
+
+        self.setFrameShape(QFrame.Shape.StyledPanel)
+        self.setStyleSheet(
+            "PilotFeedbackBox { background:#1f1f1f; border:1px solid #333; border-radius:4px; }"
+        )
+        grid = QGridLayout(self)
+        grid.setContentsMargins(12, 8, 12, 8)
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(5)
+
+        title = QLabel("📝  Ressenti après le vol de test")
+        title.setStyleSheet(
+            "color:#bbb; font-size:13px; font-weight:bold; letter-spacing:1px;"
+        )
+        grid.addWidget(title, 0, 0, 1, 4)
+
+        for row, (key, label_text) in enumerate(self.QUESTIONS, start=1):
+            lbl = QLabel(label_text)
+            lbl.setStyleSheet("color:#e0e0e0; font-size:13px;")
+            lbl.setMinimumWidth(330)
+            grid.addWidget(lbl, row, 0)
+
+            btn_yes = QPushButton("Oui")
+            btn_no  = QPushButton("Non")
+            btn_yes.setCheckable(True)
+            btn_no.setCheckable(True)
+            btn_yes.setMinimumWidth(60)
+            btn_no.setMinimumWidth(60)
+            self._restyle(btn_yes, None, True)
+            self._restyle(btn_no,  None, False)
+            btn_yes.clicked.connect(lambda _c, k=key: self._set(k, True))
+            btn_no.clicked.connect(lambda _c, k=key: self._set(k, False))
+            grid.addWidget(btn_yes, row, 1)
+            grid.addWidget(btn_no,  row, 2)
+            self._buttons[key] = (btn_yes, btn_no)
+
+        # Statut + bouton "Réinitialiser"
+        self._status = QLabel("0/5 réponses — réponds aux 5 questions pour générer le CLI.")
+        self._status.setStyleSheet("color:#888; font-size:12px; font-style:italic;")
+        grid.addWidget(self._status, len(self.QUESTIONS) + 1, 0, 1, 3)
+
+        btn_reset = QPushButton("↺ Réinitialiser")
+        btn_reset.setToolTip("Efface toutes les réponses")
+        btn_reset.clicked.connect(self.reset)
+        grid.addWidget(btn_reset, len(self.QUESTIONS) + 1, 3)
+
+        grid.setColumnStretch(0, 1)
+
+    @staticmethod
+    def _restyle(btn: QPushButton, current: bool | None, is_yes_btn: bool):
+        """Style un bouton selon l'état de la question."""
+        is_selected = (current is True and is_yes_btn) or (current is False and not is_yes_btn)
+        accent = "#3d6e3d" if is_yes_btn else "#a04030"
+        if is_selected:
+            btn.setStyleSheet(
+                f"QPushButton {{ background:{accent}; color:#fff;"
+                f" border:2px solid #fff; border-radius:4px;"
+                f" padding:4px 10px; font-weight:bold; font-size:13px; }}"
+            )
+            btn.setChecked(True)
+        else:
+            btn.setStyleSheet(
+                f"QPushButton {{ background:#252525; color:#ccc;"
+                f" border:1px solid {accent}; border-radius:4px;"
+                f" padding:4px 10px; font-size:13px; }}"
+                f" QPushButton:hover {{ background:#333; color:#fff; }}"
+            )
+            btn.setChecked(False)
+
+    def _set(self, key: str, value: bool):
+        # Toggle off si on reclique sur la même réponse
+        if self._answers[key] == value:
+            self._answers[key] = None
+        else:
+            self._answers[key] = value
+        btn_yes, btn_no = self._buttons[key]
+        self._restyle(btn_yes, self._answers[key], True)
+        self._restyle(btn_no,  self._answers[key], False)
+        self._refresh_status()
+        self.feedback_changed.emit()
+
+    def _refresh_status(self):
+        answered = sum(1 for v in self._answers.values() if v is not None)
+        if answered == 5:
+            self._status.setText("✅ 5/5 réponses — clique « Appliquer » pour générer le CLI.")
+            self._status.setStyleSheet("color:#5fc46e; font-size:12px; font-weight:bold;")
+        else:
+            self._status.setText(
+                f"{answered}/5 réponses — réponds aux 5 questions pour générer le CLI."
+            )
+            self._status.setStyleSheet("color:#888; font-size:12px; font-style:italic;")
+
+    def current(self) -> PilotFeedback:
+        return PilotFeedback(**self._answers)
+
+    def is_complete(self) -> bool:
+        return all(v is not None for v in self._answers.values())
+
+    def reset(self):
+        for k in self._answers:
+            self._answers[k] = None
+            btn_yes, btn_no = self._buttons[k]
+            self._restyle(btn_yes, None, True)
+            self._restyle(btn_no,  None, False)
+        self._refresh_status()
+        self.feedback_changed.emit()
+
+
+class MotorTempBox(QFrame):
+    """3 boutons : froids / tièdes / chauds. Saisi par le pilote après le vol,
+    en touchant les cloches moteur. État HOT bloque toute reco qui aggraverait
+    la chauffe (sécurité)."""
+
+    OPTIONS = [
+        (MotorTemp.COLD, "❄  Froids",
+         "Ambiant + 0-5 °C — à peine tièdes",
+         "#3a6ea5"),
+        (MotorTemp.WARM, "🌡  Tièdes",
+         "Ambiant + 5-10 °C — niveau normal",
+         "#3d6e3d"),
+        (MotorTemp.HOT,  "🔥  Chauds",
+         "On a du mal à tenir les doigts dessus — limite avant destruction",
+         "#a04030"),
+    ]
+
+    def __init__(self):
+        super().__init__()
+        self._selected: MotorTemp = MotorTemp.UNKNOWN
+        self.setFrameShape(QFrame.Shape.StyledPanel)
+        self.setStyleSheet(
+            "MotorTempBox { background:#1f1f1f; border:1px solid #333; border-radius:4px; }"
+        )
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(12, 8, 12, 8)
+        layout.setSpacing(10)
+
+        title = QLabel("🔧  Température moteurs (touche après le vol)")
+        title.setStyleSheet(
+            "color:#bbb; font-size:13px; font-weight:bold; letter-spacing:1px;"
+        )
+        title.setMinimumWidth(280)
+        layout.addWidget(title)
+
+        self._buttons: dict[MotorTemp, QPushButton] = {}
+        for state, label, tip, color in self.OPTIONS:
+            btn = QPushButton(label)
+            btn.setCheckable(True)
+            btn.setToolTip(tip)
+            btn.setMinimumHeight(34)
+            btn.setMinimumWidth(110)
+            btn.setStyleSheet(self._style_for(color, checked=False))
+            btn.clicked.connect(lambda _checked, s=state: self._select(s))
+            self._buttons[state] = btn
+            layout.addWidget(btn)
+        layout.addStretch()
+
+    @staticmethod
+    def _style_for(color: str, checked: bool) -> str:
+        if checked:
+            return (f"QPushButton {{ background:{color}; color:#fff;"
+                    f" border:2px solid #fff; border-radius:4px;"
+                    f" padding:4px 12px; font-weight:bold; font-size:13px; }}")
+        return (f"QPushButton {{ background:#252525; color:#ccc;"
+                f" border:1px solid {color}; border-radius:4px;"
+                f" padding:4px 12px; font-size:13px; }}"
+                f" QPushButton:hover {{ background:#333; color:#fff; }}")
+
+    def _select(self, state: MotorTemp):
+        self._selected = state
+        for s, btn in self._buttons.items():
+            color = next(c for st, _, _, c in self.OPTIONS if st == s)
+            btn.setChecked(s == state)
+            btn.setStyleSheet(self._style_for(color, checked=(s == state)))
+
+    def current(self) -> MotorTemp:
+        return self._selected
+
+    def reset(self):
+        self._selected = MotorTemp.UNKNOWN
+        for s, btn in self._buttons.items():
+            color = next(c for st, _, _, c in self.OPTIONS if st == s)
+            btn.setChecked(False)
+            btn.setStyleSheet(self._style_for(color, checked=False))
+
+
 class DecodeWorker(QThread):
     """Décode un fichier BBL dans un thread séparé — évite de bloquer l'UI."""
     done  = pyqtSignal(list)   # list[pd.DataFrame]
@@ -324,10 +529,27 @@ class MainWindow(QMainWindow):
         top_bar.addWidget(self._selectors_widget)
         ctrl_layout.addLayout(top_bar)
 
-        # Ressenti en vol (caché avant load)
+        # Ressenti en vol (caché avant load + caché pour styles non concernés)
         self._feel_box = FeelSlidersBox()
         self._feel_box.setVisible(False)
         ctrl_layout.addWidget(self._feel_box)
+        # Le ressenti pilote n'a un intérêt qu'en Ciné Whoop et Long Range
+        # (vol cinématique / endurance — fluidité et stabilité fines).
+        # Pour Freestyle/Racing/Bangers les sliders prennent de la place
+        # visuelle pour rien : on les masque dynamiquement.
+        self._style_combo.currentTextChanged.connect(
+            lambda _: self._update_feel_visibility()
+        )
+
+        # Température moteurs (caché avant load)
+        self._motor_temp_box = MotorTempBox()
+        self._motor_temp_box.setVisible(False)
+        ctrl_layout.addWidget(self._motor_temp_box)
+
+        # Ressenti pilote 5 Y/N (caché avant load)
+        self._pilot_fb_box = PilotFeedbackBox()
+        self._pilot_fb_box.setVisible(False)
+        ctrl_layout.addWidget(self._pilot_fb_box)
 
         # Bouton Appliquer (caché avant load)
         self._btn_apply = QPushButton("✓  Appliquer le profil et le ressenti")
@@ -468,12 +690,15 @@ class MainWindow(QMainWindow):
         bat_cells = int(battery[:-1]) if battery != 'Auto' else 0
 
         feel = self._feel_box.current_feel()
+        motor_temp = self._motor_temp_box.current()
+        feedback = self._pilot_fb_box.current()
         session_analyses = []
         session_reports  = []
         try:
             for i, df in enumerate(sessions):
                 sa = analyze(df, self._last_cfg)
-                rp = generate_report(sa, self._last_cfg, size, style, bat_cells, feel)
+                rp = generate_report(sa, self._last_cfg, size, style, bat_cells,
+                                     feel, motor_temp, feedback)
                 session_analyses.append(sa)
                 session_reports.append(rp)
                 tab = self._build_session_tab(df, self._last_cfg, sa, rp)
@@ -516,6 +741,8 @@ class MainWindow(QMainWindow):
             self._has_loaded = True
             self._selectors_widget.setVisible(True)
             self._feel_box.setVisible(True)
+            self._motor_temp_box.setVisible(True)
+            self._pilot_fb_box.setVisible(True)
             self._btn_apply.setVisible(True)
             self._btn_set_ref.setVisible(True)
             self._ref_label.setVisible(True)
@@ -547,7 +774,10 @@ class MainWindow(QMainWindow):
             if sa is None:
                 continue
             feel = self._feel_box.current_feel()
-            rp = generate_report(sa, self._last_cfg, size, style, bat_cells, feel)
+            motor_temp = self._motor_temp_box.current()
+            feedback = self._pilot_fb_box.current()
+            rp = generate_report(sa, self._last_cfg, size, style, bat_cells,
+                                 feel, motor_temp, feedback)
             new_diag = DiagnosticWidget(self._last_cfg, rp, size,
                                         flight_type=getattr(sa, 'flight_type', None),
                                         sa=sa)

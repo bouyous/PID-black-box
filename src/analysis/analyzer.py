@@ -19,6 +19,11 @@ OSCILLATION_BAND = (40, 400)
 # Drift ligne droite : oscillation basse fréquence en vol stable
 DRIFT_BAND = (3, 30)
 
+# Oscillation PID classique d'un 5" (P trop haut / D trop bas) :
+# tombe entre la bande drift (3-30) et la bande osc HF (40-400). Détectée
+# séparément pour ne PAS recommander une hausse de I (qui empire le drone).
+PID_OSC_BAND = (8, 40)
+
 # Prop wash : oscillation 20-80 Hz après un input
 PROPWASH_BAND = (15, 80)
 
@@ -58,6 +63,17 @@ class AxisAnalysis:
     # Drift ligne droite (oscillation basse fréquence en vol stable)
     drift_score: float = 0.0         # 0-1
     drift_freq_hz: float = 0.0
+
+    # Oscillation PID 8-40 Hz (P trop haut / D trop bas / filtres trop lâches).
+    # Distincte du drift : ce n'est pas un manque de I, c'est une boucle qui
+    # accroche. Recommander I↑ ici aggrave systématiquement le drone.
+    pid_osc_score: float = 0.0       # 0-1
+    pid_osc_freq_hz: float = 0.0
+    has_pid_oscillation: bool = False
+
+    # Punch wobble : plongeon ou rebond du nez sur les coups de gaz.
+    # Calcule la corrélation throttle_jerk × |gyro| sur fenêtres de punch-out.
+    punch_wobble_score: float = 0.0  # 0-1 (utile surtout sur Pitch)
 
     # Prop wash (oscillation amortie après input)
     propwash_score: float = 0.0      # 0-1
@@ -293,7 +309,9 @@ def _analyze_axis(df: pd.DataFrame, cfg: FlightConfig, axis: int,
         sp = df[sp_col].to_numpy(dtype=np.float64)
         _fill_step_response(aa, t, gyro, sp, fly_mask, fs)
         _detect_drift(aa, gyro, sp, fly_mask, fs)
+        _detect_pid_oscillation(aa, gyro, sp, fly_mask, fs)
         _detect_propwash(aa, gyro, sp, fly_mask, fs)
+        _detect_punch_wobble(aa, df, gyro, fly_mask, fs)
 
     return aa
 
@@ -407,6 +425,115 @@ def _detect_drift(aa: AxisAnalysis, gyro: np.ndarray, sp: np.ndarray,
 
     aa.drift_score = float(min(1.0, max(rel * 1.5, abs_contrib)))
     aa.drift_freq_hz = peak_f
+
+
+def _detect_pid_oscillation(aa: AxisAnalysis, gyro: np.ndarray, sp: np.ndarray,
+                             fly_mask: np.ndarray, fs: float):
+    """Détecte une oscillation PID 8-40 Hz en vol calme et en vol actif.
+
+    Différent du drift : on cherche un pic *étroit* persistant (boucle qui
+    accroche), pas une dérive lente. Si présent, **interdire** au recommender
+    de monter I (ça aggraverait). La cause est P trop haut, D trop bas, ou
+    filtres D-term trop lâches.
+
+    Le score combine deux mesures :
+      - rel = pic / énergie de la bande 8-40 Hz   (concentration)
+      - q   = pic / médiane de la bande            (proéminence)
+    On exige `q > 3` pour parler d'oscillation, sinon on est juste face au
+    bruit large bande naturel d'un quad.
+    """
+    # On utilise l'ensemble du vol (pas seulement les sections calmes) :
+    # une oscillation PID s'exprime aussi pendant les manœuvres modérées.
+    gyro_fly = gyro[fly_mask]
+    if len(gyro_fly) < 1024:
+        return
+
+    freqs, psd = _welch_psd(gyro_fly, fs, nperseg=2048)
+    if len(freqs) == 0:
+        return
+
+    band = (freqs >= PID_OSC_BAND[0]) & (freqs <= PID_OSC_BAND[1])
+    if not band.any():
+        return
+
+    band_power = psd[band]
+    band_freqs = freqs[band]
+    peak_idx = int(np.argmax(band_power))
+    peak_f = float(band_freqs[peak_idx])
+    peak_p = float(band_power[peak_idx])
+
+    total_band = float(np.sum(band_power)) + 1e-9
+    median_band = float(np.median(band_power)) + 1e-12
+    rel = peak_p / total_band
+    q   = peak_p / median_band
+
+    # Score : concentration × proéminence, plafonné.
+    score = min(1.0, rel * 1.3 + max(0.0, (q - 3) / 20))
+    aa.pid_osc_score = float(score)
+    aa.pid_osc_freq_hz = peak_f
+    # Drapeau : pic clairement séparé du bruit de fond
+    aa.has_pid_oscillation = (q > 4.0 and rel > 0.10) or score > 0.35
+
+
+def _detect_punch_wobble(aa: AxisAnalysis, df: pd.DataFrame, gyro: np.ndarray,
+                          fly_mask: np.ndarray, fs: float):
+    """Détecte les rebonds du nez sur les coups de gaz (anti-gravity insuffisant
+    ou iterm_relax trop agressif sur pitch).
+
+    Méthode : repérer les "punch-outs" (throttle qui monte fort), regarder
+    le pic d'écart gyro-vs-zéro dans les 200ms suivantes. Si le drone plonge
+    ou rebondit systématiquement, le score grimpe.
+
+    Pertinent surtout sur l'axe Pitch (axis=1).
+    """
+    if 'rcCommand[3]' not in df.columns or fs < 100:
+        return
+
+    thr = df['rcCommand[3]'].to_numpy(dtype=np.float64)
+    # Lissage léger pour éviter de réagir au bruit de stick
+    win = max(1, int(fs * 0.05))
+    if win > 1:
+        kernel = np.ones(win) / win
+        thr_smooth = np.convolve(thr, kernel, mode='same')
+    else:
+        thr_smooth = thr
+
+    # Jerk normalisé : variation throttle sur ~150ms
+    horizon = max(1, int(fs * 0.15))
+    if horizon >= len(thr_smooth):
+        return
+    djerk = np.zeros_like(thr_smooth)
+    djerk[horizon:] = thr_smooth[horizon:] - thr_smooth[:-horizon]
+    djerk_norm = djerk / 1000.0  # plage stick brute
+
+    # Punch out = montée throttle > 25% en 150ms et fly_mask actif
+    punch_idx = np.where((djerk_norm > 0.25) & fly_mask)[0]
+    if len(punch_idx) == 0:
+        return
+
+    # Dédupliquer : un punch peut s'étaler sur plusieurs samples
+    merged = [int(punch_idx[0])]
+    for i in punch_idx[1:]:
+        if i - merged[-1] > int(fs * 0.4):
+            merged.append(int(i))
+    if len(merged) < 2:
+        return
+
+    look_after = int(fs * 0.25)
+    deviations = []
+    for idx in merged:
+        end = min(idx + look_after, len(gyro) - 1)
+        if end - idx < int(fs * 0.05):
+            continue
+        seg = gyro[idx:end]
+        deviations.append(float(np.max(np.abs(seg - seg[0]))))
+
+    if not deviations:
+        return
+
+    mean_dev = float(np.mean(deviations))
+    # Calibration empirique : 30 deg/s = peu, 120 deg/s = wobble franc.
+    aa.punch_wobble_score = float(min(1.0, max(0.0, (mean_dev - 30) / 90)))
 
 
 def _detect_propwash(aa: AxisAnalysis, gyro: np.ndarray, sp: np.ndarray,

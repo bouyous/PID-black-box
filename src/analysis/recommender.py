@@ -26,6 +26,60 @@ class Severity(str, Enum):
     CRITICAL = "critical"
 
 
+@dataclass
+class PilotFeedback:
+    """5 questions oui/non posées au pilote APRÈS le vol de test.
+
+    Sémantique : `True` = oui, `False` = non, `None` = pas encore répondu.
+
+    Le logiciel ne génère le bloc CLI final que quand toutes les réponses
+    sont fournies — ça force le pilote à un retour structuré au lieu de
+    recoller un dump à l'aveugle.
+    """
+    improved:        bool | None = None  # Y a-t-il eu une amélioration ?
+    has_rebounds:    bool | None = None  # Y a-t-il des rebonds (punch wobble) ?
+    has_propwash:    bool | None = None  # Y a-t-il encore du propwash ?
+    locked_enough:   bool | None = None  # Est-il suffisamment locké ?
+    reactive_enough: bool | None = None  # Est-il suffisamment réactif ?
+
+    def is_complete(self) -> bool:
+        return all(v is not None for v in (
+            self.improved, self.has_rebounds, self.has_propwash,
+            self.locked_enough, self.reactive_enough,
+        ))
+
+    def is_empty(self) -> bool:
+        return all(v is None for v in (
+            self.improved, self.has_rebounds, self.has_propwash,
+            self.locked_enough, self.reactive_enough,
+        ))
+
+    def all_good(self) -> bool:
+        """Drone considéré bien réglé d'après le pilote :
+        amélioration vue, plus de rebonds ni de propwash, locké et réactif."""
+        return (self.improved is True
+                and self.has_rebounds is False
+                and self.has_propwash is False
+                and self.locked_enough is True
+                and self.reactive_enough is True)
+
+
+class MotorTemp(str, Enum):
+    """Ressenti température moteur après un vol de test, doigts sur la cloche.
+
+    - COLD : à peine tiède, ambiant + 0-5 °C → marge confortable, on peut pousser.
+    - WARM : tiède, ambiant + 5-10 °C → normal, recos sans contrainte spéciale.
+    - HOT  : on a du mal à tenir les doigts dessus → DANGER. Le tune actuel
+             force trop les moteurs. Aucune recommandation ne doit augmenter
+             la charge moteur (P↑/D↑/master↑/anti_grav↑/idle↑ → tous bloqués).
+             Le logiciel doit au contraire proposer un repli de sécurité.
+    """
+    COLD = "cold"
+    WARM = "warm"
+    HOT  = "hot"
+    UNKNOWN = "unknown"
+
+
 SEVERITY_EMOJI = {
     Severity.OK:       "✅",
     Severity.INFO:     "ℹ️",
@@ -429,6 +483,12 @@ def compute_health_score(session: SessionAnalysis,
                          style: dict = DEFAULT_STYLE) -> int:
     score = 100.0
     for aa in session.axes:
+        # Oscillation PID 8-40 Hz (boucle qui accroche, le pire des défauts)
+        if aa.has_pid_oscillation or aa.pid_osc_score > 0.20:
+            score -= min(25, 6 + aa.pid_osc_score * 35)
+        # Punch wobble (rebond du nez sur les gaz)
+        if aa.punch_wobble_score > 0.25:
+            score -= min(10, aa.punch_wobble_score * 15)
         # Oscillations
         if aa.oscillation_score > style['osc_target']:
             over = aa.oscillation_score - style['osc_target']
@@ -472,7 +532,9 @@ def generate_report(session: SessionAnalysis, cfg: FlightConfig,
                     drone_size: str = '5"',
                     flying_style: str = 'Freestyle',
                     battery_cells_override: int = 0,
-                    feel: FlightFeel | None = None) -> DiagnosticReport:
+                    feel: FlightFeel | None = None,
+                    motor_temp: MotorTemp = MotorTemp.UNKNOWN,
+                    feedback: PilotFeedback | None = None) -> DiagnosticReport:
     report = DiagnosticReport(
         drone_size=drone_size,
         flying_style=flying_style,
@@ -579,13 +641,369 @@ def generate_report(session: SessionAnalysis, cfg: FlightConfig,
         jitter_score          = jitter,
     )
 
-    if not report.recommendations and not report.filter_recommendations:
-        report.summary.append(
-            f"Aucun axe ne dépasse les cibles du style {flying_style}. "
-            f"Score {report.health_score}/100 — très bon."
+    # ----- Ressenti pilote (5 questions oui/non) -----
+    if feedback is not None and not feedback.is_empty():
+        _apply_pilot_feedback(report, cfg, feedback, flying_style)
+    elif feedback is not None and feedback.is_empty():
+        # Feedback existe mais vide → on attend les réponses pour finaliser
+        report.summary.insert(0,
+            "📝 Réponds aux 5 questions de ressenti pour générer le CLI "
+            "définitif. Le diagnostic ci-dessous est provisoire."
         )
 
+    # ----- Garde-fou MOTEURS CHAUDS -----
+    # Si le pilote signale des moteurs chauds, on REFUSE toute reco qui
+    # augmenterait la charge moteur, et on force un repli de sécurité.
+    if motor_temp == MotorTemp.HOT:
+        _apply_hot_motors_safety(report, cfg, flying_style)
+    elif motor_temp == MotorTemp.WARM:
+        report.summary.append(
+            "Moteurs tièdes (ambiant + 5-10 °C) — niveau normal, "
+            "recommandations appliquées sans contrainte thermique."
+        )
+    elif motor_temp == MotorTemp.COLD:
+        report.summary.append(
+            "Moteurs froids — marge thermique confortable, "
+            "le pilote peut envisager de pousser P/D/FF si cohérent."
+        )
+
+    # ----- Diagnostic "drone réglé" : conditions strictes -----
+    # Une liste de recommandations vide ne suffit pas : il faut aussi
+    # qu'aucun signal d'alerte n'ait été détecté côté analyse brute.
+    has_pid_osc = any(aa.has_pid_oscillation for aa in session.axes)
+    worst_pid_osc = max((aa.pid_osc_score for aa in session.axes), default=0.0)
+    worst_drift = max((aa.drift_score for aa in session.axes), default=0.0)
+    worst_osc = max((aa.oscillation_score for aa in session.axes), default=0.0)
+    worst_punch = max((aa.punch_wobble_score for aa in session.axes), default=0.0)
+    truly_clean = (
+        report.health_score >= 85
+        and not has_pid_osc
+        and worst_pid_osc < 0.20
+        and worst_drift < style['drift_target'] * 0.8
+        and worst_osc < style['osc_target'] * 0.8
+        and worst_punch < 0.25
+    )
+
+    if not report.recommendations and not report.filter_recommendations:
+        if truly_clean:
+            report.summary.append(
+                f"Aucun axe ne dépasse les cibles du style {flying_style}. "
+                f"Score {report.health_score}/100 — très bon."
+            )
+        else:
+            # Cas suspect : le solveur n'a rien proposé mais des indicateurs
+            # restent allumés. On le dit clairement au pilote.
+            details = []
+            if has_pid_osc or worst_pid_osc >= 0.20:
+                axes_osc = [aa for aa in session.axes
+                            if aa.has_pid_oscillation or aa.pid_osc_score >= 0.20]
+                freqs = ", ".join(f"{aa.name} {aa.pid_osc_freq_hz:.0f}Hz"
+                                  for aa in axes_osc if aa.pid_osc_freq_hz > 0)
+                details.append(f"oscillation PID détectée ({freqs})")
+            if worst_drift >= style['drift_target'] * 0.8:
+                details.append(f"drift score {worst_drift:.2f}")
+            if worst_punch >= 0.25:
+                details.append(f"rebonds sur les gaz (punch wobble {worst_punch:.2f})")
+            msg = (f"Score {report.health_score}/100. "
+                   f"Aucune correction PID automatique n'est suffisamment "
+                   f"sûre, mais des défauts restent visibles : "
+                   f"{' ; '.join(details) if details else 'voir graphes FFT'}. "
+                   f"Vérifier mécanique (hélices, frame, moteurs) avant de "
+                   f"relancer un tune.")
+            report.summary.append(msg)
+            report.warnings.append(
+                "Le drone n'est PAS encore réglé : signaux d'alerte présents "
+                "malgré l'absence de recommandation chiffrée."
+            )
+
     return report
+
+
+# ---------------------------------------------------------------------------
+# Ressenti pilote — application des réponses aux recommandations
+# ---------------------------------------------------------------------------
+
+def _apply_pilot_feedback(report: 'DiagnosticReport', cfg: FlightConfig,
+                          fb: PilotFeedback, flying_style: str):
+    """Le pilote a répondu aux 5 questions oui/non. On force des recos en
+    conséquence et on bride/amplifie celles déjà présentes."""
+
+    notes: list[str] = []
+
+    # 1. Amélioration : NON  → on était dans la mauvaise direction.
+    #    On halve les deltas existants et on ajoute un avertissement clair.
+    if fb.improved is False:
+        for r in report.recommendations:
+            # Ramène le suggested vers le current de moitié
+            r.suggested = int(round(r.current + (r.suggested - r.current) * 0.5))
+        report.warnings.insert(0,
+            "⚠️ Pilote : pas d'amélioration ressentie. Les nouveaux deltas "
+            "sont divisés par 2 ; si la prochaine BBL est encore pire, il "
+            "faut REVENIR aux PIDs précédents (avant ce dump CLI)."
+        )
+        notes.append("amélioration NON → deltas halvés")
+    elif fb.improved is True:
+        notes.append("amélioration OUI → on poursuit la même direction")
+
+    # 2. Rebonds (punch wobble) : OUI → forcer anti_grav + iterm_relax_cutoff
+    if fb.has_rebounds is True:
+        if cfg.anti_gravity_gain < 100 and flying_style != 'Racing':
+            new_ag = min(150, max(cfg.anti_gravity_gain + 20, 100))
+            if not any('anti_gravity_gain' in l for l in report.filter_recommendations):
+                report.filter_recommendations.append(
+                    f"set anti_gravity_gain = {new_ag}    "
+                    f"# était {cfg.anti_gravity_gain} — pilote signale "
+                    f"des REBONDS sur les gaz : on booste l'I sur les punchs"
+                )
+        if 0 < cfg.iterm_relax_cutoff < 22:
+            new_cut = 22
+            if not any('iterm_relax_cutoff' in l
+                       for l in report.filter_recommendations):
+                report.filter_recommendations.append(
+                    f"set iterm_relax_cutoff = {new_cut}    "
+                    f"# était {cfg.iterm_relax_cutoff} — pilote signale "
+                    f"des REBONDS : I-term reprend plus vite après les inputs"
+                )
+        notes.append("rebonds OUI → anti_grav + iterm_relax_cutoff poussés")
+
+    # 3. Propwash : OUI → bump D_min ratio cible + dterm_lpf serré
+    if fb.has_propwash is True:
+        # Force une reco D_min sur roll/pitch si pas encore présente
+        for ax in (0, 1):
+            d_cur = cfg.pid_d[ax] if ax < len(cfg.pid_d) else 0
+            dm_cur = cfg.d_min[ax] if ax < len(cfg.d_min) else 0
+            if d_cur > 0 and dm_cur > 0 and dm_cur < d_cur:
+                axis_name = AXIS_PARAM[ax]
+                already = any(r.param == f"d_min_{axis_name}"
+                              for r in report.recommendations)
+                if not already:
+                    target_dm = min(d_cur, int(dm_cur + max(3, (d_cur - dm_cur) * 0.4)))
+                    if target_dm > dm_cur:
+                        report.recommendations.append(Recommendation(
+                            param=f"d_min_{axis_name}", current=dm_cur,
+                            suggested=target_dm, severity=Severity.WARNING,
+                            axis=ax,
+                            reason="pilote signale du PROPWASH résiduel — "
+                                   "remonter D_min pour amortir post-input"
+                        ))
+        # Resserre dterm_lpf1 si très large
+        if cfg.dterm_lpf1_dyn_max_hz > 160:
+            new_cutoff = max(120, int(cfg.dterm_lpf1_dyn_max_hz * 0.88))
+            if (new_cutoff < cfg.dterm_lpf1_dyn_max_hz
+                    and not any('dterm_lpf1_dyn_max_hz' in l
+                                for l in report.filter_recommendations)):
+                report.filter_recommendations.append(
+                    f"set dterm_lpf1_dyn_max_hz = {new_cutoff}    "
+                    f"# était {cfg.dterm_lpf1_dyn_max_hz} — pilote signale "
+                    f"du PROPWASH : on resserre le filtre D-term"
+                )
+        notes.append("propwash OUI → D_min + dterm_lpf serré")
+
+    # 4. Pas assez locké → FF + D un peu plus haut
+    if fb.locked_enough is False:
+        # FF up sur roll+pitch si configurés
+        for ax in (0, 1):
+            f_cur = cfg.pid_f[ax] if ax < len(cfg.pid_f) else 0
+            if f_cur > 0:
+                axis_name = AXIS_PARAM[ax]
+                # N'ajoute que s'il n'y a pas déjà une reco FF
+                already = any(r.param == f"f_{axis_name}"
+                              for r in report.recommendations)
+                if not already:
+                    f_new = min(int(f_cur * 1.10), 250)
+                    if f_new > f_cur:
+                        report.recommendations.append(Recommendation(
+                            param=f"f_{axis_name}", current=f_cur,
+                            suggested=f_new, severity=Severity.INFO, axis=ax,
+                            reason="pilote demande PLUS DE LOCK — "
+                                   "FF augmenté de 10 %"
+                        ))
+            # D up modeste si bruit raisonnable
+            d_cur = cfg.pid_d[ax] if ax < len(cfg.pid_d) else 0
+            if d_cur > 0:
+                axis_name = AXIS_PARAM[ax]
+                # Annule si une baisse de D existe (oscillation détectée — priorité)
+                has_d_dec = any(r.param == f"d_{axis_name}"
+                                and r.suggested < r.current
+                                for r in report.recommendations)
+                has_d_inc = any(r.param == f"d_{axis_name}"
+                                and r.suggested > r.current
+                                for r in report.recommendations)
+                if not has_d_dec and not has_d_inc:
+                    d_new = min(int(d_cur * 1.07), 90)
+                    if d_new > d_cur:
+                        report.recommendations.append(Recommendation(
+                            param=f"d_{axis_name}", current=d_cur,
+                            suggested=d_new, severity=Severity.INFO, axis=ax,
+                            reason="pilote demande PLUS DE LOCK — D +7 %"
+                        ))
+        notes.append("pas assez locké → FF↑ + D↑")
+    elif fb.locked_enough is True:
+        notes.append("locké OK")
+
+    # 5. Pas assez réactif → P + FF un peu plus haut
+    if fb.reactive_enough is False:
+        for ax in (0, 1):
+            p_cur = cfg.pid_p[ax] if ax < len(cfg.pid_p) else 0
+            if p_cur > 0:
+                axis_name = AXIS_PARAM[ax]
+                has_p_dec = any(r.param == f"p_{axis_name}"
+                                and r.suggested < r.current
+                                for r in report.recommendations)
+                # Si une baisse de P existe (osc détectée) on ne va PAS la contrarier
+                if not has_p_dec:
+                    has_p_inc = any(r.param == f"p_{axis_name}"
+                                    and r.suggested > r.current
+                                    for r in report.recommendations)
+                    if not has_p_inc:
+                        p_new = min(int(p_cur * 1.06), 110)
+                        if p_new > p_cur:
+                            report.recommendations.append(Recommendation(
+                                param=f"p_{axis_name}", current=p_cur,
+                                suggested=p_new, severity=Severity.INFO, axis=ax,
+                                reason="pilote demande PLUS DE RÉACTIVITÉ — "
+                                       "P +6 %"
+                            ))
+        notes.append("pas assez réactif → P↑")
+    elif fb.reactive_enough is True:
+        notes.append("réactif OK")
+
+    # 6. Cas drone vraiment bien : tout en vert + amélioration ressentie
+    if fb.all_good():
+        report.summary.insert(0,
+            "✅ Pilote : tout est OK ressenti (amélioration, pas de rebonds, "
+            "pas de propwash, locké, réactif). Dans ce cas : SAUVEGARDER ce "
+            "tune comme référence et ne plus toucher avant changement de "
+            "matériel."
+        )
+        # On garde les recos de fond éventuelles mais on les passe en INFO
+        for r in report.recommendations:
+            if r.severity in (Severity.WARNING, Severity.CRITICAL):
+                r.severity = Severity.INFO
+
+    # Trace des choix appliqués
+    if notes:
+        report.summary.append("Ressenti pilote (Y/N) appliqué : "
+                              + " ; ".join(notes))
+
+
+# ---------------------------------------------------------------------------
+# Garde-fou moteurs chauds
+# ---------------------------------------------------------------------------
+
+def _apply_hot_motors_safety(report: 'DiagnosticReport', cfg: FlightConfig,
+                              flying_style: str):
+    """Le pilote a touché les moteurs après le vol et a signalé "chauds"
+    (douleur au contact). Le tune actuel sollicite trop les moteurs.
+
+    Action : on filtre les recommandations existantes pour ne garder que
+    celles qui RÉDUISENT la charge moteur, et on en ajoute de repli si rien
+    ne va dans ce sens. Aucune ligne ne doit pousser P/D/master/anti_grav.
+    """
+    # 1. Filtrer les recos PID : retirer les hausses de P, D, FF, master.
+    #    On garde les baisses (P↓, D↓, FF↓) — qui aident à baisser la charge.
+    #    On garde aussi les baisses de I (rare mais possible) ; les hausses
+    #    de I ont moins d'impact thermique mais on les coupe par prudence.
+    kept = []
+    removed_count = 0
+    for r in report.recommendations:
+        is_increase = r.suggested > r.current
+        param = r.param.lower()
+        # Tout ce qui touche P, D, F, dmax, master ne doit PAS monter.
+        risky = is_increase and any(
+            param.startswith(prefix) for prefix in
+            ('p_', 'd_', 'f_', 'dmax_', 'master')
+        )
+        if risky:
+            removed_count += 1
+            continue
+        kept.append(r)
+    report.recommendations = kept
+
+    # 2. Filtrer les recos filtre : retirer les hausses d'anti_gravity_gain,
+    #    de dshot_idle_value, et toute hausse de cutoff D-term/gyro
+    #    (cutoffs plus larges = plus de bruit haute fréquence dans les
+    #    moteurs = chauffe).
+    safe_filters = []
+    risky_filter_keys = (
+        'anti_gravity_gain', 'dshot_idle_value', 'motor_output_limit',
+    )
+    for line in report.filter_recommendations:
+        is_set = 'set ' in line and '=' in line
+        if not is_set:
+            safe_filters.append(line)
+            continue
+        # Tente d'extraire (clé, val) ; si on ne sait pas comparer, on garde.
+        try:
+            lhs = line.split('set ', 1)[1].split('=', 1)[0].strip()
+            rhs = int(line.split('=', 1)[1].strip().split()[0])
+        except (IndexError, ValueError):
+            safe_filters.append(line)
+            continue
+        # Anti-gravity / dshot_idle / motor_output_limit : on coupe la
+        # ligne si elle augmente la valeur actuelle.
+        if lhs == 'anti_gravity_gain' and rhs > cfg.anti_gravity_gain:
+            removed_count += 1
+            continue
+        if lhs == 'dshot_idle_value' and rhs > cfg.dshot_idle_value:
+            removed_count += 1
+            continue
+        # Cutoffs filtre D-term : élargir = plus de bruit moteur.
+        if lhs == 'dterm_lpf1_dyn_max_hz' and cfg.dterm_lpf1_dyn_max_hz > 0 \
+                and rhs > cfg.dterm_lpf1_dyn_max_hz:
+            removed_count += 1
+            continue
+        safe_filters.append(line)
+    report.filter_recommendations = safe_filters
+
+    # 3. Repli de sécurité : forcer une baisse modérée de master (-8 %)
+    #    et de dshot_idle si > 5.5 % — réduit la chauffe statique.
+    if cfg.dshot_idle_value > 550:
+        new_idle = max(450, int(cfg.dshot_idle_value * 0.92))
+        # Évite duplicate
+        if not any('dshot_idle_value' in l for l in report.filter_recommendations):
+            report.filter_recommendations.append(
+                f"set dshot_idle_value = {new_idle}    "
+                f"# était {cfg.dshot_idle_value} — moteurs chauds : on "
+                f"réduit l'idle pour soulager la chauffe à l'arrêt"
+            )
+
+    # anti_gravity_gain élevé + moteurs chauds = très consommateur
+    if cfg.anti_gravity_gain >= 100 and flying_style != 'Racing':
+        new_ag = max(60, int(cfg.anti_gravity_gain * 0.8))
+        if not any('anti_gravity_gain' in l for l in report.filter_recommendations):
+            report.filter_recommendations.append(
+                f"set anti_gravity_gain = {new_ag}    "
+                f"# était {cfg.anti_gravity_gain} — moteurs chauds : "
+                f"baisser le boost I-term sur les punchs"
+            )
+
+    # Master multiplier : si configuré (mode simplifié), demander -10 %
+    if cfg.simplified_master and cfg.simplified_master > 110:
+        new_master = max(90, int(cfg.simplified_master * 0.9))
+        if not any('simplified_master_multiplier' in l
+                   for l in report.filter_recommendations):
+            report.filter_recommendations.append(
+                f"set simplified_master_multiplier = {new_master}    "
+                f"# était {cfg.simplified_master} — moteurs chauds : "
+                f"on dégrade un poil la réactivité globale pour soulager"
+            )
+
+    # 4. Avertissement clair en tête de warnings
+    msg_critical = (
+        "🔥 MOTEURS CHAUDS signalés par le pilote : on est proche de la "
+        "destruction thermique. Toute recommandation qui augmenterait P, D, "
+        "FF, anti_gravity ou idle a été supprimée. "
+        + (f"({removed_count} reco(s) bloquée(s) par sécurité) " if removed_count
+           else "")
+        + "Avant de pousser le tune : (a) vérifier hélices propres et "
+          "équilibrées, (b) vérifier qu'aucun moteur n'a un bobinage frotté, "
+          "(c) vérifier ESC pas en surcourant (calibration + timing), "
+          "(d) re-tester avec ces réglages plus doux et toucher à nouveau "
+          "les moteurs après un vol court."
+    )
+    # On le met en TÊTE pour qu'il soit visible
+    report.warnings.insert(0, msg_critical)
 
 
 # ---------------------------------------------------------------------------
@@ -632,14 +1050,61 @@ def _check_axis(aa: AxisAnalysis, cfg: FlightConfig, report: DiagnosticReport,
                 f"# était {cfg.dterm_lpf1_dyn_max_hz} — oscillation D-term haute"
             )
 
-    # ===== 2. Drift ligne droite (I trop bas OU P trop haut) =====
+    # ===== 2a. Oscillation PID 8-40 Hz (P↑↑ / D↓ / filtres lâches) =====
+    # GARDE-FOU CRITIQUE : ne JAMAIS recommander de monter I quand le drone
+    # accroche déjà sur une fréquence 8-40 Hz. Augmenter I dans ce cas rend
+    # le drone plus nerveux et amplifie l'oscillation (cas Liam 28/04/2026).
+    if aa.has_pid_oscillation:
+        sev = (Severity.CRITICAL if aa.pid_osc_score > 0.55
+               else Severity.WARNING if aa.pid_osc_score > 0.30
+               else Severity.INFO)
+        # Réduction P proportionnelle au score, bornée
+        if p_cur > 0:
+            reduction = min(0.18, 0.06 + aa.pid_osc_score * 0.20)
+            p_new = _clamp_change(p_cur, -reduction, max_delta, p_range)
+            if p_new != p_cur:
+                report.recommendations.append(Recommendation(
+                    param=f"p_{AXIS_PARAM[ax]}", current=p_cur, suggested=p_new,
+                    severity=sev, axis=ax,
+                    reason=(f"oscillation PID {aa.pid_osc_freq_hz:.0f}Hz "
+                            f"(score {aa.pid_osc_score:.2f}) — P trop haut pour "
+                            f"l'amortissement actuel")
+                ))
+        # Si D-term noise raisonnable → on peut monter D pour amortir.
+        if d_cur > 0 and aa.d_noise_rms < aa.gyro_noise_rms * 2.5:
+            boost = min(0.12, 0.04 + aa.pid_osc_score * 0.15)
+            d_new = _clamp_change(d_cur, +boost, max_delta, d_range)
+            if d_new != d_cur:
+                report.recommendations.append(Recommendation(
+                    param=f"d_{AXIS_PARAM[ax]}", current=d_cur, suggested=d_new,
+                    severity=Severity.INFO, axis=ax,
+                    reason=(f"D faible vs P pour fréq {aa.pid_osc_freq_hz:.0f}Hz "
+                            f"— monter D amortit l'oscillation")
+                ))
+        # Filtre D-term : si dterm_lpf1 trop large pour la fréquence d'osc.
+        if cfg.dterm_lpf1_dyn_max_hz > 200 and aa.pid_osc_freq_hz > 0:
+            new_cutoff = max(120, int(cfg.dterm_lpf1_dyn_max_hz * 0.85))
+            if new_cutoff < cfg.dterm_lpf1_dyn_max_hz:
+                report.filter_recommendations.append(
+                    f"set dterm_lpf1_dyn_max_hz = {new_cutoff}    "
+                    f"# était {cfg.dterm_lpf1_dyn_max_hz} — oscillation PID "
+                    f"{aa.pid_osc_freq_hz:.0f}Hz, resserrer D-term"
+                )
+
+    # ===== 2b. Drift ligne droite (I trop bas) — UNIQUEMENT si pas d'osc PID =====
     if aa.drift_score > style['drift_target']:
         over = aa.drift_score - style['drift_target']
         sev = Severity.WARNING if aa.drift_score > style['drift_critical'] else Severity.INFO
 
-        # Si oscillation déjà détectée → baisser P en priorité
-        if aa.has_oscillation and aa.oscillation_score > style['osc_target']:
-            # déjà traité plus haut
+        # Garde-fous : ne pas monter I si une oscillation existe déjà
+        # (HF dans la bande 40-400, OU PID 8-40). Sinon I aggrave.
+        oscillating = (
+            (aa.has_oscillation and aa.oscillation_score > style['osc_target'])
+            or aa.has_pid_oscillation
+        )
+        if oscillating:
+            # On ne touche pas I. Le drift résiduel sera corrigé par les
+            # recommandations P/D ci-dessus.
             pass
         else:
             # Remonter I (typique : oscillation gauche/droite en ligne droite).
@@ -1100,6 +1565,38 @@ def _check_betaflight_extras(session: SessionAnalysis, cfg: FlightConfig,
             f"# était {cfg.anti_gravity_gain} — instabilité probable sur throttle pumps "
             f"(60-80 est la norme {flying_style})"
         )
+
+    # --- 4b. Punch wobble (pitch plonge sur les coups de gaz) ---
+    # Symptôme typique : iterm_relax_cutoff trop bas, ou anti_gravity_gain
+    # trop bas, ou pitch_pi insuffisant. On guide le pilote.
+    pitch_aa = session.axes[1] if len(session.axes) > 1 else None
+    if pitch_aa is not None and pitch_aa.punch_wobble_score > 0.25:
+        report.warnings.append(
+            f"Pitch plonge/rebondit sur les punch-outs "
+            f"(score {pitch_aa.punch_wobble_score:.2f}). "
+            f"Causes probables : anti_gravity_gain trop bas, "
+            f"iterm_relax_cutoff trop bas, ou I pitch insuffisant."
+        )
+        # Remonter anti_gravity si bas
+        if cfg.anti_gravity_gain < 80 and flying_style != 'Racing':
+            new_ag = 100 if flying_style == 'Freestyle' else 90
+            report.filter_recommendations.append(
+                f"set anti_gravity_gain = {new_ag}    "
+                f"# était {cfg.anti_gravity_gain} — punch wobble pitch "
+                f"({pitch_aa.punch_wobble_score:.2f}) : I-term boosté sur les "
+                f"montées de gaz pour empêcher le nez de plonger"
+            )
+        # Remonter iterm_relax_cutoff si bas
+        if 0 < cfg.iterm_relax_cutoff < 18:
+            new_cut = 20
+            # Évite duplicate
+            if not any('iterm_relax_cutoff' in l
+                       for l in report.filter_recommendations):
+                report.filter_recommendations.append(
+                    f"set iterm_relax_cutoff = {new_cut}    "
+                    f"# était {cfg.iterm_relax_cutoff} — punch wobble : "
+                    f"I-term reprend plus vite après le punch"
+                )
 
     # --- 5. Warnings hardware (tirés de la KB) ---
     # Bruit HF persistant → évoquer grommets / BEC / condensateur
