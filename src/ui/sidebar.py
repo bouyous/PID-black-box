@@ -166,18 +166,20 @@ class RailSidebar(QFrame):
 
     # Sections de navigation. Chaque entrée = (icone, label, view_id, tooltip).
     # Les view_id "_divider" insèrent un séparateur visuel.
+    # NB : les entrées dont le premier champ vaut "_divider" insèrent un séparateur
+    # visuel (HLine) — elles ne créent PAS de NavButton.
     NAV_ITEMS = [
         ("📂", "Ouvrir un fichier",  "_open_action", "Ouvrir un .bbl ou .bfl depuis l'explorateur"),
-        ("_divider", "", "", ""),
+        ("_divider", "", "_divider", ""),
         ("🩺", "Diagnostic",         "diagnostic",   "Analyse + recommandations PID/filtres"),
         ("📈", "Gyroscope",          "gyroscope",    "Courbes brutes du gyro 3 axes"),
         ("🎚", "PID Roll",           "pid_roll",     "Réponse PID sur l'axe roll"),
         ("🎚", "PID Pitch",          "pid_pitch",    "Réponse PID sur l'axe pitch"),
         ("🎚", "PID Yaw",            "pid_yaw",      "Réponse PID sur l'axe yaw"),
         ("🌀", "FFT",                "fft",          "Spectre fréquentiel — détection vibrations"),
-        ("⚙",  "Moteurs",            "motors",       "Commandes moteurs et eRPM"),
+        ("❋",  "Moteurs",            "motors",       "Commandes moteurs et eRPM (hélices)"),
         ("📊", "Comparaison",        "comparison",   "Avant / après — visible quand une référence est définie"),
-        ("_divider", "", "", ""),
+        ("_divider", "", "_divider", ""),
         ("🎯", "Profil & Ressenti",  "profile",      "Taille, style, batterie + ressenti pilote"),
     ]
 
@@ -306,10 +308,16 @@ class RailSidebar(QFrame):
         for vid, btn in self._buttons.items():
             btn.setChecked(vid == view_id)
 
-    def set_buttons_enabled(self, enabled: bool, *, except_open: bool = True):
-        """Active/désactive tous les boutons sauf 'open' (utile avant 1er chargement)."""
+    def set_buttons_enabled(self, enabled: bool, *, always_enabled: tuple[str, ...] = ("_open_action", "profile")):
+        """Active/désactive les boutons.
+
+        Les boutons listés dans `always_enabled` restent toujours cliquables —
+        par défaut "Ouvrir un fichier" et "Profil & Ressenti" qui doivent
+        être accessibles avant même le premier chargement de BBL.
+        """
         for vid, btn in self._buttons.items():
-            if vid == "_open_action" and except_open:
+            if vid in always_enabled:
+                btn.setEnabled(True)
                 continue
             btn.setEnabled(enabled)
 

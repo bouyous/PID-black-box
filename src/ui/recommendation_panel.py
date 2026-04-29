@@ -3,7 +3,7 @@ Panel de diagnostic : contexte du vol, recommandations, CLI dump.
 """
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt, QSettings
+from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -27,17 +27,26 @@ from analysis.recommender import DiagnosticReport, Recommendation, Severity, AXI
 from analysis.sliders import compute_sliders
 from analysis.symptom_db import CauseVector, RiskLevel, SymptomRule
 
-_GATE_KEY = "safety_gate_clicks"
+# ---------------------------------------------------------------------------
+# Gate de sécurité : "J'accepte les risques avant d'afficher les recos".
+# Compteur PAR OUVERTURE de l'application — il se réinitialise à chaque
+# lancement (variable de module). Le gate disparaît après 3 acceptations
+# dans la session courante. La prochaine fois qu'on lance le logiciel,
+# il réapparaîtra de zéro — c'est volontaire pour qu'un pilote ne s'habitue
+# jamais à cliquer sans lire.
+# ---------------------------------------------------------------------------
+
+_SESSION_GATE_CLICKS: int = 0
+_SESSION_GATE_LIMIT: int = 3
 
 
 def _gate_auto_bypass() -> bool:
-    s = QSettings("PID-BlackBox", "BlackBoxAnalyzer")
-    return int(s.value(_GATE_KEY, 0)) >= 3
+    return _SESSION_GATE_CLICKS >= _SESSION_GATE_LIMIT
 
 
 def _increment_gate_count():
-    s = QSettings("PID-BlackBox", "BlackBoxAnalyzer")
-    s.setValue(_GATE_KEY, int(s.value(_GATE_KEY, 0)) + 1)
+    global _SESSION_GATE_CLICKS
+    _SESSION_GATE_CLICKS += 1
 
 
 def _strip_cli_comments(dump: str) -> str:
@@ -763,11 +772,51 @@ class CliDumpTab(QWidget):
         top.addWidget(back)
 
         top.addWidget(_label("Mode :", color='#ccc', size=11))
+        # Style custom pour les radio buttons : indicateur ROND avec POINT bleu
+        # quand sélectionné. Le défaut Qt6 est illisible (rond gris qui s'efface).
+        radio_style = """
+            QRadioButton {
+                color: #ddd;
+                font-size: 13px;
+                padding: 4px 10px;
+                spacing: 8px;
+                background: #2a2a2a;
+                border: 1px solid #444;
+                border-radius: 4px;
+            }
+            QRadioButton:hover {
+                background: #333;
+                border-color: #4a9eff;
+            }
+            QRadioButton:checked {
+                background: #1e3a5f;
+                color: #fff;
+                border: 2px solid #4a9eff;
+                font-weight: bold;
+            }
+            QRadioButton::indicator {
+                width: 16px;
+                height: 16px;
+                border-radius: 9px;
+                border: 2px solid #888;
+                background: #1a1a1a;
+            }
+            QRadioButton::indicator:hover {
+                border-color: #4a9eff;
+            }
+            QRadioButton::indicator:checked {
+                border: 2px solid #4a9eff;
+                background: qradialgradient(cx:0.5, cy:0.5, radius:0.5,
+                    stop:0 #4a9eff, stop:0.55 #4a9eff, stop:0.6 #1e3a5f, stop:1 #1e3a5f);
+            }
+        """
         self.rb_raw = QRadioButton("Valeurs brutes")
         self.rb_slider = QRadioButton("Sliders PID")
         self.rb_raw.setChecked(True)
-        self.rb_raw.setStyleSheet("color:#ddd;")
-        self.rb_slider.setStyleSheet("color:#ddd;")
+        self.rb_raw.setStyleSheet(radio_style)
+        self.rb_slider.setStyleSheet(radio_style)
+        self.rb_raw.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.rb_slider.setCursor(Qt.CursorShape.PointingHandCursor)
         grp = QButtonGroup(w)
         grp.addButton(self.rb_raw)
         grp.addButton(self.rb_slider)

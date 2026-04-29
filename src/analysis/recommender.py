@@ -731,19 +731,25 @@ def _apply_pilot_feedback(report: 'DiagnosticReport', cfg: FlightConfig,
     notes: list[str] = []
 
     # 1. Amélioration : NON  → on était dans la mauvaise direction.
-    #    On halve les deltas existants et on ajoute un avertissement clair.
+    #    On atténue les deltas (×0.6, pas ×0.5 — on avance quand même un peu)
+    #    et on prévient le pilote qu'il faut être prudent.
+    # 1bis. Amélioration : OUI → on AMPLIFIE les deltas (×1.35) pour converger
+    #    plus vite. Le pilote nous a confirmé qu'on va dans le bon sens, donc
+    #    on n'a aucune raison d'être conservateur. C'est ce qui permet de
+    #    boucler en 3 BBL au lieu de 7-8 (cas Liam, terrain 28-29/04/2026).
     if fb.improved is False:
         for r in report.recommendations:
-            # Ramène le suggested vers le current de moitié
-            r.suggested = int(round(r.current + (r.suggested - r.current) * 0.5))
+            r.suggested = int(round(r.current + (r.suggested - r.current) * 0.6))
         report.warnings.insert(0,
             "⚠️ Pilote : pas d'amélioration ressentie. Les nouveaux deltas "
-            "sont divisés par 2 ; si la prochaine BBL est encore pire, il "
+            "sont atténués (×0.6) ; si la prochaine BBL est encore pire, il "
             "faut REVENIR aux PIDs précédents (avant ce dump CLI)."
         )
-        notes.append("amélioration NON → deltas halvés")
+        notes.append("amélioration NON → deltas atténués ×0.6")
     elif fb.improved is True:
-        notes.append("amélioration OUI → on poursuit la même direction")
+        for r in report.recommendations:
+            r.suggested = int(round(r.current + (r.suggested - r.current) * 1.35))
+        notes.append("amélioration OUI → deltas amplifiés ×1.35 (convergence rapide)")
 
     # 2. Rebonds (punch wobble) : OUI → forcer anti_grav + iterm_relax_cutoff
     if fb.has_rebounds is True:
@@ -810,13 +816,13 @@ def _apply_pilot_feedback(report: 'DiagnosticReport', cfg: FlightConfig,
                 already = any(r.param == f"f_{axis_name}"
                               for r in report.recommendations)
                 if not already:
-                    f_new = min(int(f_cur * 1.10), 250)
+                    f_new = min(int(f_cur * 1.18), 250)   # +18% (avant +10%)
                     if f_new > f_cur:
                         report.recommendations.append(Recommendation(
                             param=f"f_{axis_name}", current=f_cur,
                             suggested=f_new, severity=Severity.INFO, axis=ax,
                             reason="pilote demande PLUS DE LOCK — "
-                                   "FF augmenté de 10 %"
+                                   "FF augmenté de 18 %"
                         ))
             # D up modeste si bruit raisonnable
             d_cur = cfg.pid_d[ax] if ax < len(cfg.pid_d) else 0
@@ -830,12 +836,12 @@ def _apply_pilot_feedback(report: 'DiagnosticReport', cfg: FlightConfig,
                                 and r.suggested > r.current
                                 for r in report.recommendations)
                 if not has_d_dec and not has_d_inc:
-                    d_new = min(int(d_cur * 1.07), 90)
+                    d_new = min(int(d_cur * 1.12), 90)   # +12% (avant +7%)
                     if d_new > d_cur:
                         report.recommendations.append(Recommendation(
                             param=f"d_{axis_name}", current=d_cur,
                             suggested=d_new, severity=Severity.INFO, axis=ax,
-                            reason="pilote demande PLUS DE LOCK — D +7 %"
+                            reason="pilote demande PLUS DE LOCK — D +12 %"
                         ))
         notes.append("pas assez locké → FF↑ + D↑")
     elif fb.locked_enough is True:
@@ -856,13 +862,13 @@ def _apply_pilot_feedback(report: 'DiagnosticReport', cfg: FlightConfig,
                                     and r.suggested > r.current
                                     for r in report.recommendations)
                     if not has_p_inc:
-                        p_new = min(int(p_cur * 1.06), 110)
+                        p_new = min(int(p_cur * 1.12), 110)   # +12% (avant +6%)
                         if p_new > p_cur:
                             report.recommendations.append(Recommendation(
                                 param=f"p_{axis_name}", current=p_cur,
                                 suggested=p_new, severity=Severity.INFO, axis=ax,
                                 reason="pilote demande PLUS DE RÉACTIVITÉ — "
-                                       "P +6 %"
+                                       "P +12 %"
                             ))
         notes.append("pas assez réactif → P↑")
     elif fb.reactive_enough is True:
@@ -1030,10 +1036,12 @@ def _check_axis(aa: AxisAnalysis, cfg: FlightConfig, report: DiagnosticReport,
     if aa.oscillation_score > style['osc_target'] and p_cur > 0:
         over = aa.oscillation_score - style['osc_target']
         sev = Severity.WARNING if aa.oscillation_score > style['osc_critical'] else Severity.INFO
-        # Réduction proportionnelle à la sévérité
-        reduction = min(0.15, over * 0.6)
+        # Réduction proportionnelle à la sévérité.
+        # Plafond relevé à 22% (avant 15%) — plus agressif pour converger
+        # en 3 BBL au lieu de 7-8 (retour terrain Liam, 28-29/04/2026).
+        reduction = min(0.22, over * 0.85)
         if sev == Severity.WARNING:
-            reduction = max(reduction, 0.08)
+            reduction = max(reduction, 0.12)
         p_new = _clamp_change(p_cur, -reduction, max_delta, p_range)
         if p_new != p_cur:
             report.recommendations.append(Recommendation(
@@ -1058,9 +1066,11 @@ def _check_axis(aa: AxisAnalysis, cfg: FlightConfig, report: DiagnosticReport,
         sev = (Severity.CRITICAL if aa.pid_osc_score > 0.55
                else Severity.WARNING if aa.pid_osc_score > 0.30
                else Severity.INFO)
-        # Réduction P proportionnelle au score, bornée
+        # Réduction P proportionnelle au score, bornée.
+        # Plafond 25% (avant 18%) — convergence plus rapide, surtout que
+        # cette branche ne se déclenche que sur les BBL franchement osc.
         if p_cur > 0:
-            reduction = min(0.18, 0.06 + aa.pid_osc_score * 0.20)
+            reduction = min(0.25, 0.10 + aa.pid_osc_score * 0.30)
             p_new = _clamp_change(p_cur, -reduction, max_delta, p_range)
             if p_new != p_cur:
                 report.recommendations.append(Recommendation(
@@ -1071,8 +1081,9 @@ def _check_axis(aa: AxisAnalysis, cfg: FlightConfig, report: DiagnosticReport,
                             f"l'amortissement actuel")
                 ))
         # Si D-term noise raisonnable → on peut monter D pour amortir.
+        # Plafond 18% (avant 12%) pour amortir plus vite l'oscillation.
         if d_cur > 0 and aa.d_noise_rms < aa.gyro_noise_rms * 2.5:
-            boost = min(0.12, 0.04 + aa.pid_osc_score * 0.15)
+            boost = min(0.18, 0.06 + aa.pid_osc_score * 0.22)
             d_new = _clamp_change(d_cur, +boost, max_delta, d_range)
             if d_new != d_cur:
                 report.recommendations.append(Recommendation(
@@ -1112,11 +1123,13 @@ def _check_axis(aa: AxisAnalysis, cfg: FlightConfig, report: DiagnosticReport,
             # car les retours pilotes montrent qu'un I trop haut génère des
             # vibrations basse fréquence persistantes.
             if i_cur > 0:
-                boost = min(0.15, over * 0.5)
+                # Plafond 22% (avant 15%) — drift = boucle ouverte sur I,
+                # remonter vite est sûr s'il n'y a pas d'osc HF.
+                boost = min(0.22, over * 0.75)
                 if sev == Severity.WARNING:
-                    boost = max(boost, 0.10)
+                    boost = max(boost, 0.14)
                 if profile.get('i_bias') == 'low':
-                    boost *= 0.5   # demi-dose sur 7"/10"
+                    boost *= 0.6   # 7"/10" : demi-dose un peu remontée
                 i_new = _clamp_change(i_cur, +boost, max_delta, i_range)
                 if i_new != i_cur:
                     report.recommendations.append(Recommendation(
@@ -1160,7 +1173,9 @@ def _check_axis(aa: AxisAnalysis, cfg: FlightConfig, report: DiagnosticReport,
         noise_ratio = aa.d_noise_rms / (aa.gyro_noise_rms + 1e-6)
         if noise_ratio > style['noise_target']:
             sev = Severity.WARNING if noise_ratio > style['noise_critical'] else Severity.INFO
-            reduction = 0.08 if sev == Severity.INFO else 0.12
+            # Plafonds relevés : 12% / 18% (avant 8% / 12%). Le bruit D = chauffe
+            # moteur, on a tout intérêt à descendre vite.
+            reduction = 0.12 if sev == Severity.INFO else 0.18
             d_new = _clamp_change(d_cur, -reduction, max_delta, d_range)
             if d_new != d_cur:
                 report.recommendations.append(Recommendation(
@@ -1174,9 +1189,10 @@ def _check_axis(aa: AxisAnalysis, cfg: FlightConfig, report: DiagnosticReport,
     if aa.avg_rise_time_ms > style['rise_target_ms'] and aa.step_count >= 2:
         sev = Severity.WARNING if aa.avg_rise_time_ms > style['rise_critical_ms'] else Severity.INFO
 
-        # Lag FF significatif → augmenter FF
+        # Lag FF significatif → augmenter FF.
+        # Plafonds relevés : 18% / 25% (avant 12% / 18%) — convergence rapide.
         if aa.tracking_lag_ms > style['lag_target_ms'] and f_cur > 0:
-            boost = 0.12 if sev == Severity.INFO else 0.18
+            boost = 0.18 if sev == Severity.INFO else 0.25
             f_new = _clamp_change(f_cur, +boost, max_delta, f_range)
             if f_new != f_cur:
                 report.recommendations.append(Recommendation(
@@ -1187,8 +1203,9 @@ def _check_axis(aa: AxisAnalysis, cfg: FlightConfig, report: DiagnosticReport,
                             f"— FF insuffisant")
                 ))
         # Sinon augmenter P (si pas d'oscillation)
+        # Plafonds 16% / 22% (avant 10% / 15%) — drone trop mou = priorité.
         elif p_cur > 0 and not aa.has_oscillation:
-            boost = 0.10 if sev == Severity.INFO else 0.15
+            boost = 0.16 if sev == Severity.INFO else 0.22
             p_new = _clamp_change(p_cur, +boost, max_delta, p_range)
             if p_new != p_cur:
                 report.recommendations.append(Recommendation(

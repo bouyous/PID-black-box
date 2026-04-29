@@ -47,8 +47,9 @@ class MotorTempBar(QFrame):
     être accessible au pilote, même quand il scroll dans une vue.
     """
 
-    temp_changed    = pyqtSignal(object)   # MotorTemp
-    session_changed = pyqtSignal(int)
+    temp_changed     = pyqtSignal(object)   # MotorTemp
+    session_changed  = pyqtSignal(int)
+    profile_clicked  = pyqtSignal()         # bouton "🎯 Profil & Ressenti"
 
     OPTIONS = [
         (MotorTemp.COLD, "❄  Froids", "Ambiant + 0–5 °C — marge thermique disponible",  "#3a6ea5"),
@@ -99,6 +100,47 @@ class MotorTempBar(QFrame):
 
         outer.addLayout(left)
         outer.addStretch()
+
+        # ---- Bouton "Profil & Ressenti" (mis en évidence) ----
+        # À gauche de la température moteurs : c'est l'autre bouton critique.
+        self.btn_profile = QPushButton("🎯  Profil & Ressenti")
+        self.btn_profile.setMinimumHeight(40)
+        self.btn_profile.setMinimumWidth(180)
+        self.btn_profile.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_profile.setToolTip(
+            "Configurer la taille du drone, le style de vol, et le ressenti pilote.\n"
+            "Un clic ouvre la vue Profil ; les changements régénèrent le diagnostic."
+        )
+        self.btn_profile.setStyleSheet("""
+            QPushButton {
+                background: rgba(74, 158, 255, 0.15);
+                color: #ddd;
+                border: 1px solid #4a9eff;
+                border-radius: 4px;
+                padding: 4px 14px;
+                font-size: 14px;
+                font-weight: bold;
+                letter-spacing: 1px;
+            }
+            QPushButton:hover {
+                background: rgba(74, 158, 255, 0.30);
+                color: #fff;
+            }
+            QPushButton:pressed {
+                background: rgba(74, 158, 255, 0.45);
+            }
+            QPushButton:disabled {
+                color: #555;
+                border-color: #2d2d2d;
+            }
+        """)
+        self.btn_profile.clicked.connect(self.profile_clicked.emit)
+        outer.addWidget(self.btn_profile)
+
+        # Petit séparateur visuel
+        sep = QLabel(" │ ")
+        sep.setStyleSheet(f"color:{BORDER_DIM}; font-size:18px;")
+        outer.addWidget(sep)
 
         # ---- Bloc droit : titre + 3 boutons temp ----
         title = QLabel("🔧  TEMPÉRATURE  MOTEURS")

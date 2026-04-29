@@ -566,6 +566,7 @@ class MainWindow(QMainWindow):
         self.temp_bar = MotorTempBar()
         self.temp_bar.temp_changed.connect(self._on_motor_temp_changed)
         self.temp_bar.session_changed.connect(self._on_session_changed)
+        self.temp_bar.profile_clicked.connect(lambda: self._on_view_requested('profile'))
         right_lay.addWidget(self.temp_bar)
 
         # Stack des vues (plein espace restant)
@@ -585,8 +586,9 @@ class MainWindow(QMainWindow):
         # Drop overlay (par-dessus tout)
         self.overlay = DropOverlay(self)
 
-        # État initial : welcome + tous les boutons sauf "Ouvrir" désactivés
-        self.sidebar.set_buttons_enabled(False, except_open=True)
+        # État initial : welcome + boutons désactivés sauf "Ouvrir" et "Profil"
+        # (le profil reste accessible avant le 1er chargement pour pré-config).
+        self.sidebar.set_buttons_enabled(False)
         self.sidebar.set_view_visible('comparison', False)
         self.stack.setCurrentWidget(self.welcome_view)
 
