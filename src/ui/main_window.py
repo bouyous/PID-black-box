@@ -44,7 +44,8 @@ from PyQt6.QtWidgets import (
 from analysis.analyzer import SessionAnalysis, analyze
 from analysis.header_parser import FlightConfig, parse_header
 from analysis.recommender import (
-    DiagnosticReport, FlightFeel, MotorTemp, PilotFeedback, generate_report,
+    DiagnosticReport, FlightFeel, FrameType, MotorTemp, PilotFeedback,
+    generate_report,
 )
 from parser.blackbox_parser import BlackboxParser
 from ui.comparison_widget import ComparisonWidget
@@ -61,6 +62,16 @@ AXIS_NAMES      = ['Roll', 'Pitch', 'Yaw']
 DRONE_SIZES     = ['2.5"', '3"', '5"', '6"', '7"', '10"']
 FLYING_STYLES   = ['Freestyle', 'Racing', 'Long Range', 'Bangers', 'Ciné Whoop']
 BATTERY_OPTIONS = ['Auto', '2S', '3S', '4S', '6S', '8S', '12S']
+FRAME_TYPES = [
+    'Standard',
+    'Unibody (Marmotte, etc.)',
+    'Souple / Ancien (Lumenier 4-5 ans, copie)',
+]
+FRAME_TYPE_MAP = {
+    'Standard':                                  FrameType.STANDARD,
+    'Unibody (Marmotte, etc.)':                  FrameType.UNIBODY,
+    'Souple / Ancien (Lumenier 4-5 ans, copie)': FrameType.SOFT,
+}
 
 
 # --------------------------------------------------------------------------
@@ -443,7 +454,16 @@ class ProfileView(QScrollArea):
                                              "Freestyle / Racing / Long Range / Bangers / Ciné Whoop")
         self.batt_combo  = self._make_combo("Batterie",     BATTERY_OPTIONS, 'Auto',
                                              "Auto = détectée depuis la BBL")
-        for w in (self.size_combo, self.style_combo, self.batt_combo):
+        self.frame_combo = self._make_combo(
+            "Type de châssis", FRAME_TYPES, 'Standard',
+            "Standard = châssis FPV moderne 5 mm bras détachés.\n"
+            "Unibody = monobloc taillé masse (Armattan Marmotte, Source One v5).\n"
+            "  Si vis moteur OK, vibration ≠ problème de visserie.\n"
+            "Souple / Ancien = Lumenier 4-5 ans, copie chinoise, frame fatigué.\n"
+            "  Vibrations structurelles à filtrer plutôt qu'à serrer."
+        )
+        for w in (self.size_combo, self.style_combo, self.batt_combo,
+                  self.frame_combo):
             sel_lay.addWidget(w)
         sel_lay.addStretch()
 
@@ -469,6 +489,9 @@ class ProfileView(QScrollArea):
         self.batt_combo.findChild(QComboBox).currentTextChanged.connect(
             lambda _t: self.profile_changed.emit()
         )
+        self.frame_combo.findChild(QComboBox).currentTextChanged.connect(
+            lambda _t: self.profile_changed.emit()
+        )
 
     def _make_combo(self, label_text: str, items: list[str], default: str,
                     tooltip: str) -> QWidget:
@@ -489,6 +512,9 @@ class ProfileView(QScrollArea):
     def get_size(self) -> str:    return self.size_combo.findChild(QComboBox).currentText()
     def get_style(self) -> str:   return self.style_combo.findChild(QComboBox).currentText()
     def get_battery(self) -> str: return self.batt_combo.findChild(QComboBox).currentText()
+    def get_frame_type(self) -> FrameType:
+        label = self.frame_combo.findChild(QComboBox).currentText()
+        return FRAME_TYPE_MAP.get(label, FrameType.STANDARD)
 
 
 # --------------------------------------------------------------------------
@@ -745,13 +771,14 @@ class MainWindow(QMainWindow):
             feel    = self.profile_view.feel_box.current_feel()
             mtemp   = self.temp_bar.current()
             fb      = self.profile_view.pilot_fb.current()
+            frame   = self.profile_view.get_frame_type()
 
             self._analyses = []
             self._reports  = []
             for df in sessions:
                 sa = analyze(df, self._last_cfg)
                 rp = generate_report(sa, self._last_cfg, size, style, bat_cells,
-                                     feel, mtemp, fb)
+                                     feel, mtemp, fb, frame)
                 self._analyses.append(sa)
                 self._reports.append(rp)
 
@@ -845,12 +872,13 @@ class MainWindow(QMainWindow):
         feel    = self.profile_view.feel_box.current_feel()
         mtemp   = self.temp_bar.current()
         fb      = self.profile_view.pilot_fb.current()
+        frame   = self.profile_view.get_frame_type()
 
         # Régénère les rapports pour TOUTES les sessions
         self._reports = []
         for sa in self._analyses:
             rp = generate_report(sa, self._last_cfg, size, style, bat_cells,
-                                 feel, mtemp, fb)
+                                 feel, mtemp, fb, frame)
             self._reports.append(rp)
 
         # Reconstruit les vues de la session courante

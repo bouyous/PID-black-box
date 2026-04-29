@@ -64,6 +64,25 @@ class PilotFeedback:
                 and self.reactive_enough is True)
 
 
+class FrameType(str, Enum):
+    """Profil mécanique du châssis — change les seuils de l'alerte vibrations.
+
+    - STANDARD : châssis FPV moderne 5 mm bras détachés (ImpulseRC, GepRC,
+      iFlight la plupart). Seuil bas, texte habituel (vis, hélices, frame).
+    - UNIBODY  : châssis monobloc taillé masse — Armattan Marmotte 4 mm,
+      Source One v5 unibody, etc. Pas de bras à serrer ; si les 4 vis moteur
+      sont OK, **un pic de vibration n'est PAS un problème de visserie**.
+      Seuil relevé, mention vis retirée.
+    - SOFT     : châssis ancien/léger/contrefait — Lumenier 4-5 ans,
+      Armattan 4 mm fatigué, copies chinoises bras 3 mm, frames carbone
+      qui ont absorbé une dizaine de crashs. Vibrations naturellement
+      plus hautes, à FILTRER plus qu'à serrer. Seuil le plus haut.
+    """
+    STANDARD = "standard"
+    UNIBODY  = "unibody"
+    SOFT     = "soft"
+
+
 class MotorTemp(str, Enum):
     """Ressenti température moteur après un vol de test, doigts sur la cloche.
 
@@ -534,7 +553,8 @@ def generate_report(session: SessionAnalysis, cfg: FlightConfig,
                     battery_cells_override: int = 0,
                     feel: FlightFeel | None = None,
                     motor_temp: MotorTemp = MotorTemp.UNKNOWN,
-                    feedback: PilotFeedback | None = None) -> DiagnosticReport:
+                    feedback: PilotFeedback | None = None,
+                    frame_type: FrameType = FrameType.STANDARD) -> DiagnosticReport:
     report = DiagnosticReport(
         drone_size=drone_size,
         flying_style=flying_style,
@@ -599,7 +619,7 @@ def generate_report(session: SessionAnalysis, cfg: FlightConfig,
     for aa in session.axes:
         _check_axis(aa, cfg, report, profile, style)
 
-    _check_vibrations(session, cfg, report, flying_style)
+    _check_vibrations(session, cfg, report, flying_style, frame_type)
     _check_filters_global(session, cfg, report, style, profile, session)
     _check_betaflight_extras(session, cfg, report, style, flying_style)
     _check_cpu_and_bbl(cfg, report)
@@ -1528,7 +1548,8 @@ def _check_filters_global(session: SessionAnalysis, cfg: FlightConfig,
 # ---------------------------------------------------------------------------
 
 def _check_vibrations(session: SessionAnalysis, cfg: FlightConfig,
-                      report: DiagnosticReport, flying_style: str):
+                      report: DiagnosticReport, flying_style: str,
+                      frame_type: FrameType = FrameType.STANDARD):
     all_unfiltered: list[tuple[str, float, float]] = []
     for aa in session.axes:
         bad = [p for p in aa.vibration_peaks
@@ -1540,18 +1561,66 @@ def _check_vibrations(session: SessionAnalysis, cfg: FlightConfig,
         return
 
     n_peaks = len(all_unfiltered)
-    if n_peaks >= 4:
+
+    # Seuils adaptés au type de frame :
+    #   - STANDARD : 6 pics pour alerter (avant : 4 — trop bas, alarme sur
+    #               la quasi-totalité des BBL).
+    #   - UNIBODY  : 9 pics — un châssis taillé masse vibre plus, c'est normal.
+    #   - SOFT     : 12 pics — on n'alerte que si c'est vraiment hors normes.
+    threshold = {
+        FrameType.STANDARD: 6,
+        FrameType.UNIBODY:  9,
+        FrameType.SOFT:    12,
+    }.get(frame_type, 6)
+
+    if n_peaks >= threshold:
         if flying_style == 'Bangers':
             report.warnings.append(
-                f"{n_peaks} pics de vibration non filtrés — attendu en Bangers après crash. "
-                "Vérifiez les hélices."
+                f"{n_peaks} pics de vibration non filtrés — attendu en Bangers "
+                "après crash. Vérifiez les hélices."
+            )
+        elif frame_type == FrameType.UNIBODY:
+            # Frame monobloc : les 4 vis moteur sont les SEULES vis serrables.
+            # Si elles sont OK, un pic vient d'une hélice, d'un moteur, ou
+            # de la résonance naturelle du carbone — pas d'un "bras desserré".
+            report.warnings.append(
+                f"{n_peaks} pics de vibration non filtrés (châssis unibody). "
+                "Si les 4 vis moteur sont serrées, ce N'EST PAS un problème "
+                "de visserie. Pistes à vérifier dans cet ordre : "
+                "(1) hélices fissurées/déséquilibrées, "
+                "(2) cloches moteur ou roulements, "
+                "(3) résonance naturelle du carbone — à filtrer (notch) "
+                "plutôt qu'à serrer."
+            )
+        elif frame_type == FrameType.SOFT:
+            # Frame ancien/léger : les vibrations sont structurelles. La
+            # solution est filtre (notch dynamique élargi), pas mécanique.
+            report.warnings.append(
+                f"{n_peaks} pics de vibration non filtrés (châssis souple/ancien). "
+                "Sur ce type de frame, les vibrations sont en grande partie "
+                "STRUCTURELLES (carbone fatigué qui résonne). À TRAITER PAR "
+                "FILTRAGE (notch dynamique élargi, dterm_lpf serré) plutôt "
+                "que par serrage. Vérifier hélices et roulements en priorité."
             )
         else:
             report.warnings.append(
-                f"{n_peaks} pics de vibration non filtrés. "
-                "Possible : cadre fatigué, anti-vibrations usés, vis desserrées. "
-                "Inspection physique recommandée avant nouveau tune."
+                f"{n_peaks} pics de vibration non filtrés. Pistes : "
+                "hélices fissurées/déséquilibrées, vis moteur desserrées, "
+                "anti-vibrations FC usés. Inspection physique recommandée "
+                "avant nouveau tune."
             )
+    elif n_peaks >= max(2, threshold - 3):
+        # Zone "limite" : on informe sans alarmer, et on rappelle qu'avec le
+        # type de frame déclaré c'est probablement normal.
+        ctx = {
+            FrameType.UNIBODY: "normal sur un unibody",
+            FrameType.SOFT:    "normal sur frame ancien/léger",
+            FrameType.STANDARD: "à surveiller",
+        }[frame_type]
+        report.summary.append(
+            f"ℹ️  {n_peaks} pic(s) de vibration non filtré(s) — {ctx}. "
+            "Filtres notch suffiront probablement."
+        )
 
     by_axis: dict[str, list[tuple[float, str]]] = {}
     for aa in session.axes:
@@ -1990,6 +2059,73 @@ def _check_electrical(session: SessionAnalysis, cfg: FlightConfig,
             "🔌 Bruit HF élevé sans explosion du D-term : envisager une source "
             "électrique/EMI. Éloigner la FC des câbles de puissance, vérifier "
             "les soudures ESC, ajouter un condensateur 1000 µF/35 V si absent."
+        )
+
+    # --- Diagnostic CONDENSATEUR : on combine plusieurs signaux pour ne
+    #     déclencher la reco "ajouter/changer le condensateur" qu'avec un
+    #     niveau de confiance solide. Pas de spam si juste 1 signal.
+    cap_signals: list[str] = []
+    cap_score = 0
+
+    # 1. Sag batterie sévère (> 0.5 V/cell) — pack mou OU découplage
+    #    insuffisant entre la batterie et la FC.
+    if session.cell_count > 0 and sag > 0.5:
+        cap_signals.append(f"sag {sag:.2f} V/cell")
+        cap_score += 2
+
+    # 2. Bruit HF excessif (signal déjà calculé)
+    if hf_excess:
+        cap_signals.append("bruit HF élevé sans explosion D-term")
+        cap_score += 2
+
+    # 3. Pics de vibration spécifiquement entre 100 et 500 Hz qui ne sont
+    #    PAS couverts par le filtre RPM (= pas mécaniques liées à l'hélice) :
+    #    typique du switching ESC mal découplé.
+    elec_band_peaks = 0
+    for aa in session.axes[:2]:
+        for p in aa.vibration_peaks:
+            if not p.covered_by_rpm_filter and 100 < p.freq_hz < 500 \
+               and p.power_db > 0:
+                elec_band_peaks += 1
+    if elec_band_peaks >= 3:
+        cap_signals.append(f"{elec_band_peaks} pics 100-500 Hz hors RPM filter")
+        cap_score += 2
+
+    # 4. Tension min très basse même avec sag modéré : pack qui s'effondre
+    #    sur les punchs = consommation d'amperage qui dépasse la capacité
+    #    instantanée = condensateur sous-dimensionné aide.
+    if (session.cell_count > 0
+            and 0 < session.battery_voltage_min < session.cell_count * 3.2):
+        cap_signals.append(
+            f"Vmin {session.battery_voltage_min:.1f} V (très bas)"
+        )
+        cap_score += 1
+
+    # 5. Présence d'oscillation à freq fixe sur plusieurs axes (déjà alertée
+    #    plus haut comme "VCC ripple") — on ajoute juste le score si elle a
+    #    été détectée sans en faire un nouveau warning.
+    if dom_freqs:
+        close = sum(1 for f in dom_freqs if abs(f - dom_freqs[0]) < 8)
+        if close >= 2 and 40 < dom_freqs[0] < 180:
+            cap_score += 2  # déjà signalé visuellement, on appuie le score
+
+    # Décision : on émet une reco condensateur ciblée seulement si ≥ 2 signaux
+    # ET score ≥ 4 → évite les faux positifs sur les BBL "saines mais bruyantes".
+    if len(cap_signals) >= 2 and cap_score >= 4:
+        report.warnings.append(
+            "🔋 Condensateur de découplage probablement défaillant ou absent. "
+            f"Faisceau d'indices ({cap_score} pts) : "
+            + " ; ".join(cap_signals) + ". "
+            "Action : ajouter ou remplacer le condensateur 1000–2200 µF / 35 V "
+            "directement sur les pads batterie (pas sur l'XT60), pattes courtes, "
+            "polarité respectée. Si déjà présent, le retirer et mesurer son ESR : "
+            "un condensateur sec en a 5–10× la valeur d'origine."
+        )
+    elif cap_score >= 2:
+        # Soupçon léger : on l'inclut dans le résumé sans en faire une alerte.
+        report.summary.append(
+            "ℹ️ Quelques signaux électriques (" + ", ".join(cap_signals) + ") — "
+            "à surveiller, pas critique seul."
         )
 
     # --- BEC sous-dimensionné : pas détectable directement depuis la BBL,
