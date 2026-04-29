@@ -656,6 +656,33 @@ def _motor_imbalance(df: pd.DataFrame, fly_mask: np.ndarray) -> float:
 
 
 def _guess_cell_count(vbat: float) -> int:
+    """Choisit le nombre de cellules le plus plausible pour la tension moyenne
+    observée en vol.
+
+    Ancienne version : `vbat > cells * 3.3` testée du plus grand au plus petit.
+    Bug : un 6S à 19.76 V (3.29 V/cell, batterie épuisée) tombait en dessous
+    du seuil 19.8 V → classé 4S, alors qu'un 4S ne peut physiquement pas
+    dépasser ~17 V (4 × 4.25 V max).
+
+    Nouveau : on cherche la configuration qui place vbat dans une plage
+    plausible 3.0–4.25 V/cell, et on prend la plus probable (vbat/cells
+    proche de 3.7 V).
+    """
+    if vbat <= 0:
+        return 0
+    candidates = []
+    # Plage 2.7-4.25 V/cell : couvre LiPo (3.0-4.25) ET Li-ion 6S courantes
+    # en FPV qui descendent jusqu'à ~2.7 V/cell sans dommage.
+    for cells in (1, 2, 3, 4, 6, 8, 10, 12):
+        v_per_cell = vbat / cells
+        if 2.7 <= v_per_cell <= 4.25:
+            # Score : distance à 3.7 V (nominal LiPo) — le plus proche gagne
+            score = abs(v_per_cell - 3.7)
+            candidates.append((score, cells))
+    if candidates:
+        candidates.sort()
+        return candidates[0][1]
+    # Fallback : ancienne logique (vol vide ou config non standard)
     for cells in (12, 10, 8, 6, 4, 3, 2, 1):
         if vbat > cells * 3.3:
             return cells

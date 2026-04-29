@@ -589,6 +589,12 @@ def generate_report(session: SessionAnalysis, cfg: FlightConfig,
             "À activer en priorité dans Betaflight (onglet Motors)."
         )
 
+    # ATTENTION : axes critiques désactivés (FF=0, D_yaw=0)
+    # — cause #1 des "rebonds" sur freestyle. À traiter AVANT les autres
+    # checks parce qu'aucun delta multiplicatif `cur*(1+x)` ne peut activer
+    # un paramètre à 0.
+    _check_disabled_critical_params(cfg, report, profile, flying_style)
+
     # Analyse détaillée par axe
     for aa in session.axes:
         _check_axis(aa, cfg, report, profile, style)
@@ -753,6 +759,33 @@ def _apply_pilot_feedback(report: 'DiagnosticReport', cfg: FlightConfig,
 
     # 2. Rebonds (punch wobble) : OUI → forcer anti_grav + iterm_relax_cutoff
     if fb.has_rebounds is True:
+        # Sanity check : si le pilote pense que c'est I qui manque mais que I
+        # est DÉJÀ au-dessus du plafond freestyle (≥130 sur roll/pitch en 5"),
+        # on l'avertit explicitement — augmenter encore I aggrave au lieu d'aider.
+        # On utilise des seuils approchés indépendants du profil exact.
+        i_avg = (cfg.pid_i[0] + cfg.pid_i[1]) / 2 if len(cfg.pid_i) >= 2 else 0
+        ff_off = (len(cfg.pid_f) >= 2 and cfg.pid_f[0] == 0 and cfg.pid_f[1] == 0)
+        if i_avg >= 140:
+            msg_parts = [
+                f"I roll/pitch déjà très haut ({cfg.pid_i[0]}/{cfg.pid_i[1]}) "
+                "— monter I encore amplifierait le wobble basse fréquence."
+            ]
+            if ff_off:
+                msg_parts.append(
+                    "Ton vrai problème ici : Feedforward DÉSACTIVÉ (F=0). "
+                    "Sans FF, la boucle PID rattrape toujours en retard → "
+                    "wobble permanent que tu ressens comme des « rebonds ». "
+                    "Active FF (voir reco f_roll/f_pitch ci-dessus) avant "
+                    "toute autre modif."
+                )
+            else:
+                msg_parts.append(
+                    "Vérifie les vibrations mécaniques (hélices, vis, frame) "
+                    "et le sag batterie : un drone qui rebondit à I haut + "
+                    "FF activé = problème mécanique ou électrique."
+                )
+            report.warnings.insert(0, "🔍 " + " ".join(msg_parts))
+
         if cfg.anti_gravity_gain < 100 and flying_style != 'Racing':
             new_ag = min(150, max(cfg.anti_gravity_gain + 20, 100))
             if not any('anti_gravity_gain' in l for l in report.filter_recommendations):
@@ -1015,6 +1048,70 @@ def _apply_hot_motors_safety(report: 'DiagnosticReport', cfg: FlightConfig,
 # ---------------------------------------------------------------------------
 # Analyse par axe — beaucoup plus fine
 # ---------------------------------------------------------------------------
+
+def _check_disabled_critical_params(cfg: FlightConfig, report: DiagnosticReport,
+                                     profile: dict, flying_style: str):
+    """Active explicitement les paramètres CRITIQUES désactivés (=0).
+
+    Cas typique : Feedforward `F=[0,0,0]` sur un freestyle. Sans FF, le drone
+    réagit avec retard à chaque mouvement de stick → P/I rattrapent en
+    permanence → wobble basse fréquence (~9 Hz) qui ressemble à du "rebond"
+    pour le pilote, mais qui n'est PAS un manque de I.
+
+    Idem pour `D_yaw=0` : aucune amortissement yaw → oscillation yaw garantie.
+
+    Aucun delta multiplicatif `cur*(1+x)` ne peut activer un paramètre à 0
+    — il faut une recommandation **explicite** avec une valeur de départ.
+    """
+    f_range = profile['f_range']
+    d_range = profile['d_range']
+
+    # Valeurs de démarrage par style — milieu de plage, conservatrices.
+    ff_default = {
+        'Freestyle':   max(100, f_range[0] + 30),
+        'Racing':      max(105, f_range[0] + 35),
+        'Long Range':  max(85,  f_range[0] + 10),
+        'Bangers':     max(90,  f_range[0] + 15),
+        'Ciné Whoop':  max(70,  f_range[0]),
+    }.get(flying_style, max(100, f_range[0] + 30))
+
+    # 1. Feedforward désactivé : roll + pitch (yaw FF moins critique)
+    for ax in (0, 1):
+        f_cur = cfg.pid_f[ax] if ax < len(cfg.pid_f) else 0
+        if f_cur == 0:
+            axis_name = AXIS_PARAM[ax]
+            report.recommendations.append(Recommendation(
+                param=f"f_{axis_name}", current=0, suggested=ff_default,
+                severity=Severity.CRITICAL, axis=ax,
+                reason=("Feedforward DÉSACTIVÉ — cause #1 des rebonds en "
+                        "ligne droite sur un drone agressif. Sans FF, le "
+                        "drone corrige toujours en retard via P/I → wobble "
+                        "permanent. Activation impérative.")
+            ))
+
+    # 2. FF yaw désactivé : moins critique mais pertinent en freestyle
+    if len(cfg.pid_f) > 2 and cfg.pid_f[2] == 0 and flying_style != 'Long Range':
+        ff_yaw = max(80, int(ff_default * 0.85))
+        report.recommendations.append(Recommendation(
+            param="f_yaw", current=0, suggested=ff_yaw,
+            severity=Severity.WARNING, axis=2,
+            reason=("FF yaw désactivé — yaw va répondre en retard sur les "
+                    "rotations de stick. À activer pour un freestyle.")
+        ))
+
+    # 3. D_yaw désactivé : oscillation yaw quasi garantie
+    if len(cfg.pid_d) > 2 and cfg.pid_d[2] == 0:
+        # On vise le bas de la plage D (yaw n'a pas besoin d'autant de D
+        # que roll/pitch).
+        d_yaw_default = max(15, int(d_range[0] * 0.55))
+        report.recommendations.append(Recommendation(
+            param="d_yaw", current=0, suggested=d_yaw_default,
+            severity=Severity.WARNING, axis=2,
+            reason=("D yaw DÉSACTIVÉ — aucun amortissement yaw, oscillation "
+                    "yaw quasi garantie. Activation recommandée pour stopper "
+                    "le wobble yaw en vol stable.")
+        ))
+
 
 def _check_axis(aa: AxisAnalysis, cfg: FlightConfig, report: DiagnosticReport,
                 profile: dict, style: dict):
