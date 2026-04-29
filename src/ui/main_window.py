@@ -1,8 +1,29 @@
+"""
+Fenêtre principale BlackBox Analyzer (refonte v1.9.0).
+
+Architecture inspirée Betaflight Configurator + Task Manager Windows :
+  ┌──────────┬───────────────────────────────────────────────┐
+  │ rail     │ MotorTempBar (toujours visible, non scrollée) │
+  │ sidebar  ├───────────────────────────────────────────────┤
+  │ + burger │ QStackedWidget (vue sélectionnée plein écran) │
+  │ + nav    │   - welcome / diagnostic / gyroscope / ...    │
+  │          │                                               │
+  │ apply    │                                               │
+  │ ref      │                                               │
+  └──────────┴───────────────────────────────────────────────┘
+
+Drag & drop : la fenêtre entière est drop target — pas de zone dédiée.
+Overlay semi-transparent affiché pendant le drag.
+
+Adaptive sizing : showMaximized() au démarrage + minimumSize 1024x600.
+"""
+from __future__ import annotations
+
 from pathlib import Path
 
 import pandas as pd
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
-from PyQt6.QtGui import QDragEnterEvent, QDropEvent
+from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
+from PyQt6.QtGui import QDragEnterEvent, QDragLeaveEvent, QDropEvent
 from PyQt6.QtWidgets import (
     QComboBox,
     QFileDialog,
@@ -12,10 +33,10 @@ from PyQt6.QtWidgets import (
     QLabel,
     QMainWindow,
     QPushButton,
+    QScrollArea,
     QSlider,
-    QSplitter,
+    QStackedWidget,
     QStatusBar,
-    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -27,77 +48,66 @@ from analysis.recommender import (
 )
 from parser.blackbox_parser import BlackboxParser
 from ui.comparison_widget import ComparisonWidget
+from ui.drop_overlay import DropOverlay
 from ui.fft_widget import FftWidget
+from ui.motor_temp_bar import MotorTempBar
 from ui.plot_widget import GyroPlotWidget, MotorPlotWidget, PidPlotWidget
 from ui.recommendation_panel import DiagnosticWidget
+from ui.sidebar import RailSidebar
 
-SUPPORTED_EXTS = {'.bbl', '.bfl'}
-AXIS_NAMES = ['Roll', 'Pitch', 'Yaw']
-DRONE_SIZES = ['2.5"', '3"', '5"', '6"', '7"', '10"']
-FLYING_STYLES = ['Freestyle', 'Racing', 'Long Range', 'Bangers', 'Ciné Whoop']
+
+SUPPORTED_EXTS  = {'.bbl', '.bfl'}
+AXIS_NAMES      = ['Roll', 'Pitch', 'Yaw']
+DRONE_SIZES     = ['2.5"', '3"', '5"', '6"', '7"', '10"']
+FLYING_STYLES   = ['Freestyle', 'Racing', 'Long Range', 'Bangers', 'Ciné Whoop']
 BATTERY_OPTIONS = ['Auto', '2S', '3S', '4S', '6S', '8S', '12S']
 
+
+# --------------------------------------------------------------------------
+# Style global
+# --------------------------------------------------------------------------
+
 DARK_STYLE = """
-QMainWindow, QWidget {
-    background: #1a1a1a;
-    color: #e0e0e0;
-}
-QTabWidget::pane {
-    border: 1px solid #333;
-    background: #1a1a1a;
-}
-QTabBar::tab {
-    background: #252525;
-    color: #bbb;
-    padding: 6px 14px;
-    border: 1px solid #333;
-    border-bottom: none;
-}
-QTabBar::tab:selected {
-    background: #1a1a1a;
-    color: #fff;
-    border-bottom: 2px solid #4a9eff;
-}
-QTabBar::tab:hover { background: #333; }
-QStatusBar { background: #111; color: #777; font-size: 12px; }
-QComboBox {
-    background: #252525;
-    color: #e0e0e0;
-    border: 1px solid #444;
-    padding: 4px 8px;
-    border-radius: 4px;
-}
-QComboBox::drop-down { border: none; }
-QComboBox QAbstractItemView {
-    background: #252525;
-    color: #e0e0e0;
-    selection-background-color: #3a3a3a;
-}
-QGroupBox {
-    color: #888;
-    border: 1px solid #333;
-    border-radius: 4px;
-    margin-top: 8px;
-    padding: 8px;
-}
-QGroupBox::title {
-    subcontrol-origin: margin;
-    left: 8px;
-}
-QPushButton {
-    background: #252525;
-    color: #e0e0e0;
-    border: 1px solid #444;
-    padding: 4px 10px;
-    border-radius: 4px;
-}
-QPushButton:hover { background: #333; }
-QPushButton:disabled { color: #555; border-color: #333; }
+QMainWindow, QWidget { background:#1e1e1e; color:#e0e0e0; }
+QStatusBar           { background:#111;   color:#999; font-size:12px; }
+
+QTabWidget::pane     { border:1px solid #2d2d2d; background:#1e1e1e; }
+QTabBar::tab         { background:#252525; color:#bbb; padding:6px 14px;
+                       border:1px solid #2d2d2d; border-bottom:none; }
+QTabBar::tab:selected{ background:#1e1e1e; color:#fff; border-bottom:2px solid #4a9eff; }
+QTabBar::tab:hover   { background:#2f2f2f; }
+
+QComboBox            { background:#2a2a2a; color:#e0e0e0; border:1px solid #444;
+                       padding:4px 8px; border-radius:3px; }
+QComboBox::drop-down { border:none; }
+QComboBox QAbstractItemView { background:#2a2a2a; color:#e0e0e0;
+                              selection-background-color:#3a3a3a; }
+
+QPushButton          { background:#2a2a2a; color:#e0e0e0; border:1px solid #444;
+                       padding:5px 12px; border-radius:3px; }
+QPushButton:hover    { background:#333; border-color:#555; }
+QPushButton:disabled { color:#555; border-color:#2d2d2d; }
+
+QGroupBox            { color:#888; border:1px solid #2d2d2d; border-radius:3px;
+                       margin-top:10px; padding:8px; }
+QGroupBox::title     { subcontrol-origin: margin; left:8px; }
+
+QSplitter::handle    { background:#2d2d2d; width:4px; }
+QSplitter::handle:hover { background:#4a9eff; }
+
+QScrollBar:vertical  { background:#1e1e1e; width:10px; margin:0; }
+QScrollBar::handle:vertical { background:#3a3a3a; min-height:30px; border-radius:5px; }
+QScrollBar::handle:vertical:hover { background:#4a9eff; }
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { background:transparent; height:0; }
 """
 
 
+# --------------------------------------------------------------------------
+# Widgets de saisie pilote (sliders / 5 Y/N) — repris de l'ancienne UI
+# --------------------------------------------------------------------------
+
 class FeelSlidersBox(QFrame):
-    """4 sliders 1..5 pour capter le ressenti du pilote. 3 = neutre."""
+    """4 sliders 1..5 pour capter le ressenti pilote. 3 = neutre."""
 
     SLIDERS = [
         ('locked',         "🔒  Locké",          "flou",    "rivé",
@@ -129,9 +139,7 @@ class FeelSlidersBox(QFrame):
         grid.setVerticalSpacing(6)
 
         title = QLabel("Ressenti en vol  (3 = neutre)")
-        title.setStyleSheet(
-            "color:#bbb; font-size:14px; font-weight:bold; letter-spacing:1px;"
-        )
+        title.setStyleSheet("color:#bbb; font-size:14px; font-weight:bold; letter-spacing:1px;")
         grid.addWidget(title, 0, 0, 1, 5)
 
         self._sliders: dict[str, QSlider] = {}
@@ -150,9 +158,7 @@ class FeelSlidersBox(QFrame):
             grid.addWidget(lo, row, 1)
 
             s = QSlider(Qt.Orientation.Horizontal)
-            s.setMinimum(1)
-            s.setMaximum(5)
-            s.setValue(3)
+            s.setMinimum(1); s.setMaximum(5); s.setValue(3)
             s.setMinimumWidth(160)
             s.setToolTip(tt)
             s.setTickPosition(QSlider.TickPosition.TicksBelow)
@@ -195,8 +201,7 @@ class FeelSlidersBox(QFrame):
 
 
 class PilotFeedbackBox(QFrame):
-    """5 questions oui/non posées au pilote après le vol de test.
-    Le bloc CLI final n'est généré qu'une fois les 5 réponses fournies."""
+    """5 questions oui/non posées au pilote après le vol de test."""
 
     QUESTIONS = [
         ('improved',        "Y a-t-il eu une amélioration ?"),
@@ -223,9 +228,7 @@ class PilotFeedbackBox(QFrame):
         grid.setVerticalSpacing(5)
 
         title = QLabel("📝  Ressenti après le vol de test")
-        title.setStyleSheet(
-            "color:#bbb; font-size:13px; font-weight:bold; letter-spacing:1px;"
-        )
+        title.setStyleSheet("color:#bbb; font-size:13px; font-weight:bold; letter-spacing:1px;")
         grid.addWidget(title, 0, 0, 1, 4)
 
         for row, (key, label_text) in enumerate(self.QUESTIONS, start=1):
@@ -236,10 +239,8 @@ class PilotFeedbackBox(QFrame):
 
             btn_yes = QPushButton("Oui")
             btn_no  = QPushButton("Non")
-            btn_yes.setCheckable(True)
-            btn_no.setCheckable(True)
-            btn_yes.setMinimumWidth(60)
-            btn_no.setMinimumWidth(60)
+            btn_yes.setCheckable(True); btn_no.setCheckable(True)
+            btn_yes.setMinimumWidth(60); btn_no.setMinimumWidth(60)
             self._restyle(btn_yes, None, True)
             self._restyle(btn_no,  None, False)
             btn_yes.clicked.connect(lambda _c, k=key: self._set(k, True))
@@ -248,7 +249,6 @@ class PilotFeedbackBox(QFrame):
             grid.addWidget(btn_no,  row, 2)
             self._buttons[key] = (btn_yes, btn_no)
 
-        # Statut + bouton "Réinitialiser"
         self._status = QLabel("0/5 réponses — réponds aux 5 questions pour générer le CLI.")
         self._status.setStyleSheet("color:#888; font-size:12px; font-style:italic;")
         grid.addWidget(self._status, len(self.QUESTIONS) + 1, 0, 1, 3)
@@ -262,7 +262,6 @@ class PilotFeedbackBox(QFrame):
 
     @staticmethod
     def _restyle(btn: QPushButton, current: bool | None, is_yes_btn: bool):
-        """Style un bouton selon l'état de la question."""
         is_selected = (current is True and is_yes_btn) or (current is False and not is_yes_btn)
         accent = "#3d6e3d" if is_yes_btn else "#a04030"
         if is_selected:
@@ -282,7 +281,6 @@ class PilotFeedbackBox(QFrame):
             btn.setChecked(False)
 
     def _set(self, key: str, value: bool):
-        # Toggle off si on reclique sur la même réponse
         if self._answers[key] == value:
             self._answers[key] = None
         else:
@@ -320,86 +318,13 @@ class PilotFeedbackBox(QFrame):
         self.feedback_changed.emit()
 
 
-class MotorTempBox(QFrame):
-    """3 boutons : froids / tièdes / chauds. Saisi par le pilote après le vol,
-    en touchant les cloches moteur. État HOT bloque toute reco qui aggraverait
-    la chauffe (sécurité)."""
-
-    OPTIONS = [
-        (MotorTemp.COLD, "❄  Froids",
-         "Ambiant + 0-5 °C — à peine tièdes",
-         "#3a6ea5"),
-        (MotorTemp.WARM, "🌡  Tièdes",
-         "Ambiant + 5-10 °C — niveau normal",
-         "#3d6e3d"),
-        (MotorTemp.HOT,  "🔥  Chauds",
-         "On a du mal à tenir les doigts dessus — limite avant destruction",
-         "#a04030"),
-    ]
-
-    def __init__(self):
-        super().__init__()
-        self._selected: MotorTemp = MotorTemp.UNKNOWN
-        self.setFrameShape(QFrame.Shape.StyledPanel)
-        self.setStyleSheet(
-            "MotorTempBox { background:#1f1f1f; border:1px solid #333; border-radius:4px; }"
-        )
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(12, 8, 12, 8)
-        layout.setSpacing(10)
-
-        title = QLabel("🔧  Température moteurs (touche après le vol)")
-        title.setStyleSheet(
-            "color:#bbb; font-size:13px; font-weight:bold; letter-spacing:1px;"
-        )
-        title.setMinimumWidth(280)
-        layout.addWidget(title)
-
-        self._buttons: dict[MotorTemp, QPushButton] = {}
-        for state, label, tip, color in self.OPTIONS:
-            btn = QPushButton(label)
-            btn.setCheckable(True)
-            btn.setToolTip(tip)
-            btn.setMinimumHeight(34)
-            btn.setMinimumWidth(110)
-            btn.setStyleSheet(self._style_for(color, checked=False))
-            btn.clicked.connect(lambda _checked, s=state: self._select(s))
-            self._buttons[state] = btn
-            layout.addWidget(btn)
-        layout.addStretch()
-
-    @staticmethod
-    def _style_for(color: str, checked: bool) -> str:
-        if checked:
-            return (f"QPushButton {{ background:{color}; color:#fff;"
-                    f" border:2px solid #fff; border-radius:4px;"
-                    f" padding:4px 12px; font-weight:bold; font-size:13px; }}")
-        return (f"QPushButton {{ background:#252525; color:#ccc;"
-                f" border:1px solid {color}; border-radius:4px;"
-                f" padding:4px 12px; font-size:13px; }}"
-                f" QPushButton:hover {{ background:#333; color:#fff; }}")
-
-    def _select(self, state: MotorTemp):
-        self._selected = state
-        for s, btn in self._buttons.items():
-            color = next(c for st, _, _, c in self.OPTIONS if st == s)
-            btn.setChecked(s == state)
-            btn.setStyleSheet(self._style_for(color, checked=(s == state)))
-
-    def current(self) -> MotorTemp:
-        return self._selected
-
-    def reset(self):
-        self._selected = MotorTemp.UNKNOWN
-        for s, btn in self._buttons.items():
-            color = next(c for st, _, _, c in self.OPTIONS if st == s)
-            btn.setChecked(False)
-            btn.setStyleSheet(self._style_for(color, checked=False))
-
+# --------------------------------------------------------------------------
+# DecodeWorker
+# --------------------------------------------------------------------------
 
 class DecodeWorker(QThread):
     """Décode un fichier BBL dans un thread séparé — évite de bloquer l'UI."""
-    done  = pyqtSignal(list)   # list[pd.DataFrame]
+    done  = pyqtSignal(list)
     error = pyqtSignal(str)
 
     def __init__(self, parser, path: str):
@@ -415,221 +340,341 @@ class DecodeWorker(QThread):
             self.error.emit(str(exc))
 
 
-class DropArea(QLabel):
-    file_dropped = pyqtSignal(str)
-    _BASE = ("border: 2px dashed {color}; border-radius: 8px; "
-             "color: #888; font-size: 13px; background: #222; padding: 14px;")
+# --------------------------------------------------------------------------
+# Vue d'accueil (affichée tant qu'aucun fichier n'est chargé)
+# --------------------------------------------------------------------------
+
+class WelcomeView(QWidget):
+    open_file_clicked = pyqtSignal()
 
     def __init__(self):
         super().__init__()
-        self.setText("Glissez un fichier .bbl / .bfl ici")
-        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.setAcceptDrops(True)
-        self.setMinimumHeight(60)
-        self._set('#444')
+        layout = QVBoxLayout(self)
+        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.setSpacing(20)
 
-    def _set(self, color: str):
-        self.setStyleSheet(f"QLabel {{ {self._BASE.format(color=color)} }}")
+        icon = QLabel("✈")
+        icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        icon.setStyleSheet("color:#4a9eff; font-size:96px;")
+        layout.addWidget(icon)
 
-    def dragEnterEvent(self, event: QDragEnterEvent):
-        urls = event.mimeData().urls() if event.mimeData().hasUrls() else []
-        if any(Path(u.toLocalFile()).suffix.lower() in SUPPORTED_EXTS for u in urls):
-            event.acceptProposedAction()
-            self._set('#4a9eff')
-        else:
-            event.ignore()
+        title = QLabel("BlackBox Analyzer")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title.setStyleSheet(
+            "color:#fff; font-size:28px; font-weight:bold; letter-spacing:2px;"
+        )
+        layout.addWidget(title)
 
-    def dragLeaveEvent(self, event): self._set('#444')
+        subtitle = QLabel(
+            "Glissez un fichier .bbl ou .bfl n'importe où sur la fenêtre\n"
+            "ou utilisez le bouton ci-dessous"
+        )
+        subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        subtitle.setStyleSheet("color:#888; font-size:14px; line-height:1.5;")
+        layout.addWidget(subtitle)
 
-    def dropEvent(self, event: QDropEvent):
-        self._set('#444')
-        for url in event.mimeData().urls():
-            path = url.toLocalFile()
-            if Path(path).suffix.lower() in SUPPORTED_EXTS:
-                self.file_dropped.emit(path)
-                break
+        btn = QPushButton("📂   Ouvrir un fichier blackbox…")
+        btn.setMinimumHeight(44)
+        btn.setMinimumWidth(280)
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.setStyleSheet("""
+            QPushButton {
+                background:#2d5a3d; color:#fff; border:1px solid #3e7a55;
+                border-radius:4px; padding:8px 24px; font-size:14px; font-weight:bold;
+            }
+            QPushButton:hover { background:#3a7050; border-color:#5aa078; }
+        """)
+        btn.clicked.connect(self.open_file_clicked.emit)
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        btn_row.addWidget(btn)
+        btn_row.addStretch()
+        layout.addLayout(btn_row)
 
+        # Tip
+        tip = QLabel(
+            "💡  Compatible Betaflight 4.5+   ·   Multi-plateformes   ·   "
+            "Gratuit et libre"
+        )
+        tip.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        tip.setStyleSheet("color:#555; font-size:11px; padding-top:24px;")
+        layout.addWidget(tip)
+
+
+# --------------------------------------------------------------------------
+# Vue Profil & Ressenti (paramètres + sliders + 5 Y/N)
+# --------------------------------------------------------------------------
+
+class ProfileView(QScrollArea):
+    """Vue plein écran pour configurer profil + ressenti.
+    Scrollable verticalement si l'écran est petit."""
+
+    profile_changed = pyqtSignal()
+
+    def __init__(self):
+        super().__init__()
+        self.setWidgetResizable(True)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        content = QWidget()
+        self.setWidget(content)
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(16)
+
+        # Titre
+        title = QLabel("🎯  Profil de vol & ressenti pilote")
+        title.setStyleSheet("color:#fff; font-size:18px; font-weight:bold; letter-spacing:1px;")
+        layout.addWidget(title)
+
+        # ---- Sélecteurs ----
+        sel_box = QFrame()
+        sel_box.setFrameShape(QFrame.Shape.StyledPanel)
+        sel_box.setStyleSheet(
+            "QFrame { background:#1f1f1f; border:1px solid #333; border-radius:4px; }"
+        )
+        sel_lay = QHBoxLayout(sel_box)
+        sel_lay.setContentsMargins(12, 12, 12, 12)
+        sel_lay.setSpacing(20)
+
+        self.size_combo  = self._make_combo("Taille drone", DRONE_SIZES,     '5"',
+                                             "Taille des hélices — calibre tous les seuils.")
+        self.style_combo = self._make_combo("Style de vol",  FLYING_STYLES,   'Freestyle',
+                                             "Freestyle / Racing / Long Range / Bangers / Ciné Whoop")
+        self.batt_combo  = self._make_combo("Batterie",     BATTERY_OPTIONS, 'Auto',
+                                             "Auto = détectée depuis la BBL")
+        for w in (self.size_combo, self.style_combo, self.batt_combo):
+            sel_lay.addWidget(w)
+        sel_lay.addStretch()
+
+        layout.addWidget(sel_box)
+
+        # ---- Ressenti sliders ----
+        self.feel_box = FeelSlidersBox()
+        layout.addWidget(self.feel_box)
+
+        # ---- 5 questions ----
+        self.pilot_fb = PilotFeedbackBox()
+        layout.addWidget(self.pilot_fb)
+
+        layout.addStretch()
+
+        # Émet le signal quand le profil change (pour update auto)
+        self.size_combo.findChild(QComboBox).currentTextChanged.connect(
+            lambda _t: self.profile_changed.emit()
+        )
+        self.style_combo.findChild(QComboBox).currentTextChanged.connect(
+            lambda _t: self.profile_changed.emit()
+        )
+        self.batt_combo.findChild(QComboBox).currentTextChanged.connect(
+            lambda _t: self.profile_changed.emit()
+        )
+
+    def _make_combo(self, label_text: str, items: list[str], default: str,
+                    tooltip: str) -> QWidget:
+        box = QWidget()
+        lay = QVBoxLayout(box)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(4)
+        lbl = QLabel(label_text)
+        lbl.setStyleSheet("color:#aaa; font-size:12px; font-weight:bold;")
+        lay.addWidget(lbl)
+        cb = QComboBox()
+        cb.addItems(items); cb.setCurrentText(default)
+        cb.setMinimumWidth(140)
+        cb.setToolTip(tooltip)
+        lay.addWidget(cb)
+        return box
+
+    def get_size(self) -> str:    return self.size_combo.findChild(QComboBox).currentText()
+    def get_style(self) -> str:   return self.style_combo.findChild(QComboBox).currentText()
+    def get_battery(self) -> str: return self.batt_combo.findChild(QComboBox).currentText()
+
+
+# --------------------------------------------------------------------------
+# MainWindow
+# --------------------------------------------------------------------------
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.parser = BlackboxParser()
         self._last_cfg: FlightConfig | None = None
-        self._worker:  DecodeWorker | None = None   # thread en cours
-        self._has_loaded = False  # premier chargement réussi → affiche les contrôles
+        self._worker:  DecodeWorker | None = None
+        self._has_loaded = False
 
-        # Référence pour comparaison avant/après
-        self._reference: dict | None = None   # {file, sessions, analyses, reports, cfg, size, style}
-        self._score_history: list[int] = []   # scores dans l'ordre : ref puis sessions comparées
+        # État courant après chargement
+        self._sessions:  list[pd.DataFrame] = []
+        self._analyses:  list[SessionAnalysis] = []
+        self._reports:   list[DiagnosticReport] = []
+        self._current_session_idx: int = 0
+        self._current_path: str | None = None
+
+        # Référence pour comparaison
+        self._reference: dict | None = None
+        self._score_history: list[int] = []
 
         self.setWindowTitle("BlackBox Analyzer")
-        self.resize(1280, 800)
+        self.setMinimumSize(1024, 600)            # netbook OK
         self.setStyleSheet(DARK_STYLE)
+        self.setAcceptDrops(True)                 # drop sur toute la fenêtre
+
         self._build_ui()
 
+        # Plein écran maximisé au démarrage (pas fullscreen — laisse barre de titre)
+        QTimer.singleShot(0, self.showMaximized)
+
+        # Vérifie la dispo du décodeur
         if not self.parser.is_ready():
             import platform
             sys_name = platform.system()
             hint = {
-                'Darwin': "blackbox_decode_mac introuvable — voir tools/README.md (section Mac)",
+                'Darwin': "blackbox_decode introuvable — installez via brew install blackbox-tools",
                 'Linux':  "blackbox_decode introuvable — voir tools/README.md",
             }.get(sys_name, "blackbox_decode.exe introuvable — voir tools/README.md")
-            self.status.showMessage(f"  ⚠️  {hint}", 0)
+            self.status.showMessage(f"⚠️  {hint}", 0)
         else:
-            self.status.showMessage("✅  Prêt — glissez un fichier blackbox pour commencer.")
+            self.status.showMessage("✅  Prêt — glissez un fichier blackbox n'importe où.")
+
+    # ------------------------------------------------------------------
+    # Construction de l'UI
+    # ------------------------------------------------------------------
 
     def _build_ui(self):
+        # Layout horizontal : sidebar | (top bar + content stack)
         central = QWidget()
         self.setCentralWidget(central)
-        root = QVBoxLayout(central)
-        root.setContentsMargins(10, 10, 10, 6)
-        root.setSpacing(0)
+        outer = QHBoxLayout(central)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
 
-        # --- Splitter vertical : zone contrôles | onglets sessions ---
-        splitter = QSplitter(Qt.Orientation.Vertical)
-        splitter.setHandleWidth(5)
-        splitter.setStyleSheet("QSplitter::handle { background:#2a2a2a; }")
+        # ---- Sidebar gauche ----
+        self.sidebar = RailSidebar()
+        self.sidebar.view_requested.connect(self._on_view_requested)
+        self.sidebar.open_file_clicked.connect(self._open_file_dialog)
+        self.sidebar.apply_clicked.connect(self._on_apply)
+        self.sidebar.set_reference_clicked.connect(self._set_as_reference)
+        outer.addWidget(self.sidebar)
 
-        # ---- Zone contrôles (panneau haut) ----
-        ctrl_widget = QWidget()
-        ctrl_layout = QVBoxLayout(ctrl_widget)
-        ctrl_layout.setContentsMargins(0, 0, 0, 6)
-        ctrl_layout.setSpacing(5)
+        # ---- Zone droite : top bar + stacked content ----
+        right = QWidget()
+        right_lay = QVBoxLayout(right)
+        right_lay.setContentsMargins(0, 0, 0, 0)
+        right_lay.setSpacing(0)
 
-        # Ligne 1 : drop area + sélecteurs (sélecteurs cachés avant load)
-        top_bar = QHBoxLayout()
-        self.drop_area = DropArea()
-        self.drop_area.file_dropped.connect(self._on_file_dropped)
-        top_bar.addWidget(self.drop_area, stretch=1)
+        # Bandeau température moteurs (PERSISTANT, non scrollé)
+        self.temp_bar = MotorTempBar()
+        self.temp_bar.temp_changed.connect(self._on_motor_temp_changed)
+        self.temp_bar.session_changed.connect(self._on_session_changed)
+        right_lay.addWidget(self.temp_bar)
 
-        self._selectors_widget = QWidget()
-        sel_layout = QHBoxLayout(self._selectors_widget)
-        sel_layout.setContentsMargins(0, 0, 0, 0)
-        sel_layout.setSpacing(0)
-        sel_layout.addWidget(self._make_selector_box(
-            "Taille drone", DRONE_SIZES, '5"',
-            "3\" : ±45%\n5\" : ±25%\n6\" : ±35%\n7\" : ±45%\n10\" : ±55%",
-            '_size_combo'
-        ))
-        sel_layout.addWidget(self._make_selector_box(
-            "Style de vol", FLYING_STYLES, 'Freestyle',
-            "Freestyle : drone hyper loqué, FF agressif\n"
-            "Racing : réactivité max, tracking serré\n"
-            "Long Range : souple, FF bas, insensible au vent\n"
-            "Bangers : tolérant (indoor, crash probable)",
-            '_style_combo'
-        ))
-        sel_layout.addWidget(self._make_selector_box(
-            "Batterie", BATTERY_OPTIONS, 'Auto',
-            "Auto = détecté depuis la tension BBL\n"
-            "Forcer si le vol de test n'était pas sur la batterie habituelle",
-            '_battery_combo'
-        ))
-        self._selectors_widget.setVisible(False)
-        top_bar.addWidget(self._selectors_widget)
-        ctrl_layout.addLayout(top_bar)
+        # Stack des vues (plein espace restant)
+        self.stack = QStackedWidget()
+        self.stack.setStyleSheet("QStackedWidget { background:#1e1e1e; }")
+        right_lay.addWidget(self.stack, stretch=1)
 
-        # Ressenti en vol (caché avant load + caché pour styles non concernés)
-        self._feel_box = FeelSlidersBox()
-        self._feel_box.setVisible(False)
-        ctrl_layout.addWidget(self._feel_box)
-        # Le ressenti pilote n'a un intérêt qu'en Ciné Whoop et Long Range
-        # (vol cinématique / endurance — fluidité et stabilité fines).
-        # Pour Freestyle/Racing/Bangers les sliders prennent de la place
-        # visuelle pour rien : on les masque dynamiquement.
-        self._style_combo.currentTextChanged.connect(
-            lambda _: self._update_feel_visibility()
-        )
+        outer.addWidget(right, stretch=1)
 
-        # Température moteurs (caché avant load)
-        self._motor_temp_box = MotorTempBox()
-        self._motor_temp_box.setVisible(False)
-        ctrl_layout.addWidget(self._motor_temp_box)
+        # Construit les vues
+        self._build_views()
 
-        # Ressenti pilote 5 Y/N (caché avant load)
-        self._pilot_fb_box = PilotFeedbackBox()
-        self._pilot_fb_box.setVisible(False)
-        ctrl_layout.addWidget(self._pilot_fb_box)
-
-        # Bouton Appliquer (caché avant load)
-        self._btn_apply = QPushButton("✓  Appliquer le profil et le ressenti")
-        self._btn_apply.setToolTip(
-            "Recalcule le diagnostic en combinant :\n"
-            "  • Taille / Style / Batterie ci-dessus\n"
-            "  • Les 4 boutons de ressenti en vol\n"
-            "Chaque changement produit au moins un ajustement."
-        )
-        self._btn_apply.setMinimumHeight(38)
-        self._btn_apply.setStyleSheet(
-            "QPushButton { background:#2d5a3d; color:#fff;"
-            " border:1px solid #3e7a55; border-radius:4px;"
-            " padding:6px 18px; font-weight:bold; font-size:13px; }"
-            "QPushButton:hover { background:#3a7050; border-color:#5aa078; }"
-            "QPushButton:pressed { background:#245033; }"
-            "QPushButton:disabled { background:#252525; color:#555; border-color:#333; }"
-        )
-        self._btn_apply.setEnabled(False)
-        self._btn_apply.clicked.connect(self._on_profile_changed)
-        self._btn_apply.setVisible(False)
-        ctrl_layout.addWidget(self._btn_apply)
-
-        # Barre inférieure : référence + ouvrir
-        cmp_bar = QHBoxLayout()
-        self._btn_set_ref = QPushButton("💾  Définir comme référence")
-        self._btn_set_ref.setToolTip(
-            "Mémorise ce vol comme référence.\n"
-            "Chargez ensuite un nouveau vol pour comparer avant/après."
-        )
-        self._btn_set_ref.setEnabled(False)
-        self._btn_set_ref.setVisible(False)
-        self._btn_set_ref.clicked.connect(self._set_as_reference)
-        cmp_bar.addWidget(self._btn_set_ref)
-
-        self._ref_label = QLabel("")
-        self._ref_label.setStyleSheet("color:#4a9eff; font-size:11px;")
-        self._ref_label.setVisible(False)
-        cmp_bar.addWidget(self._ref_label)
-        cmp_bar.addStretch()
-
-        self._btn_load_compare = QPushButton("📂  Ouvrir un fichier…")
-        self._btn_load_compare.setToolTip("Ouvrir un fichier BBL via l'explorateur")
-        self._btn_load_compare.clicked.connect(self._open_file_dialog)
-        cmp_bar.addWidget(self._btn_load_compare)
-        ctrl_layout.addLayout(cmp_bar)
-
-        splitter.addWidget(ctrl_widget)
-
-        # ---- Onglets sessions (panneau bas) ----
-        self.session_tabs = QTabWidget()
-        self.session_tabs.setVisible(False)
-        splitter.addWidget(self.session_tabs)
-
-        splitter.setStretchFactor(0, 0)
-        splitter.setStretchFactor(1, 1)
-
-        root.addWidget(splitter)
-
+        # Status bar
         self.status = QStatusBar()
         self.setStatusBar(self.status)
 
-    def _make_selector_box(self, label_text, items, default, tooltip,
-                           attr_name) -> QWidget:
-        box = QWidget()
-        layout = QVBoxLayout(box)
-        layout.setContentsMargins(8, 0, 0, 0)
-        layout.setSpacing(4)
-        layout.addWidget(QLabel(label_text))
-        combo = QComboBox()
-        combo.addItems(items)
-        combo.setCurrentText(default)
-        combo.setToolTip(tooltip)
-        layout.addWidget(combo)
-        setattr(self, attr_name, combo)
-        return box
+        # Drop overlay (par-dessus tout)
+        self.overlay = DropOverlay(self)
+
+        # État initial : welcome + tous les boutons sauf "Ouvrir" désactivés
+        self.sidebar.set_buttons_enabled(False, except_open=True)
+        self.sidebar.set_view_visible('comparison', False)
+        self.stack.setCurrentWidget(self.welcome_view)
+
+    def _build_views(self):
+        """Construit (ou re-construit) les vues du QStackedWidget."""
+        # Welcome (toujours présente, même après chargement — utile si on charge un autre fichier)
+        self.welcome_view = WelcomeView()
+        self.welcome_view.open_file_clicked.connect(self._open_file_dialog)
+        self.stack.addWidget(self.welcome_view)
+
+        # Diagnostic / Gyro / PID R/P/Y / FFT / Moteurs / Comparaison / Profil
+        # Les vues "données" sont des placeholders au démarrage (remplacés au chargement BBL).
+        self._view_placeholders: dict[str, QWidget] = {}
+        for view_id, label in [
+            ('diagnostic', "Aucun diagnostic — chargez un fichier blackbox."),
+            ('gyroscope',  "Glissez un .bbl pour voir les courbes gyro."),
+            ('pid_roll',   "Glissez un .bbl pour voir la réponse PID Roll."),
+            ('pid_pitch',  "Glissez un .bbl pour voir la réponse PID Pitch."),
+            ('pid_yaw',    "Glissez un .bbl pour voir la réponse PID Yaw."),
+            ('fft',        "Glissez un .bbl pour voir le spectre FFT."),
+            ('motors',     "Glissez un .bbl pour voir les courbes moteurs."),
+            ('comparison', "Définissez une référence puis chargez un nouveau vol."),
+        ]:
+            ph = self._make_placeholder(label)
+            self._view_placeholders[view_id] = ph
+            self.stack.addWidget(ph)
+
+        # Profil & ressenti — vue à part, pas un placeholder
+        self.profile_view = ProfileView()
+        self.profile_view.profile_changed.connect(self._on_apply)   # tout changement re-applique
+        self.profile_view.pilot_fb.feedback_changed.connect(self._on_apply)
+        self.stack.addWidget(self.profile_view)
+
+    @staticmethod
+    def _make_placeholder(text: str) -> QWidget:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lbl = QLabel(text)
+        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lbl.setStyleSheet("color:#666; font-size:14px; font-style:italic;")
+        lay.addWidget(lbl)
+        return w
 
     # ------------------------------------------------------------------
-    # Chargement fichier
+    # Drag & drop sur la fenêtre entière
     # ------------------------------------------------------------------
+
+    def dragEnterEvent(self, event: QDragEnterEvent):
+        urls = event.mimeData().urls() if event.mimeData().hasUrls() else []
+        if any(Path(u.toLocalFile()).suffix.lower() in SUPPORTED_EXTS for u in urls):
+            event.acceptProposedAction()
+            self.overlay.show_overlay()
+        else:
+            event.ignore()
+
+    def dragLeaveEvent(self, event: QDragLeaveEvent):
+        self.overlay.hide_overlay()
+        event.accept()
+
+    def dropEvent(self, event: QDropEvent):
+        self.overlay.hide_overlay()
+        for url in event.mimeData().urls():
+            path = url.toLocalFile()
+            if Path(path).suffix.lower() in SUPPORTED_EXTS:
+                self._on_file_dropped(path)
+                event.acceptProposedAction()
+                return
+        event.ignore()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, 'overlay'):
+            self.overlay.update_geometry()
+
+    # ------------------------------------------------------------------
+    # Sidebar : navigation & actions
+    # ------------------------------------------------------------------
+
+    def _on_view_requested(self, view_id: str):
+        """Switch dans le QStackedWidget."""
+        if view_id == 'profile':
+            self.stack.setCurrentWidget(self.profile_view)
+        else:
+            target = self._view_placeholders.get(view_id)
+            if target is not None:
+                self.stack.setCurrentWidget(target)
+        self.sidebar.set_active(view_id)
 
     def _open_file_dialog(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -639,195 +684,247 @@ class MainWindow(QMainWindow):
         if path:
             self._on_file_dropped(path)
 
+    # ------------------------------------------------------------------
+    # Chargement fichier
+    # ------------------------------------------------------------------
+
     def _on_file_dropped(self, path: str):
-        # Si un décodage est déjà en cours, on l'ignore
         if self._worker is not None and self._worker.isRunning():
             self.status.showMessage("⏳  Décodage déjà en cours — attendez la fin.", 3000)
             return
 
         name = Path(path).name
+        self._current_path = path
         self.status.showMessage(f"⏳  Décodage en cours : {name} …")
-        self.drop_area.setText(f"⏳  Décodage de {name}…")
-        self.session_tabs.clear()
-        self.session_tabs.setVisible(False)
-        self._btn_set_ref.setEnabled(False)
+        self.temp_bar.set_file_label(f"⏳  {name}", 0)
 
-        # Parse l'en-tête (rapide, pas besoin de thread)
+        # Affiche un placeholder "chargement" pendant le décodage
+        for ph in self._view_placeholders.values():
+            ph_lbl = ph.findChild(QLabel)
+            if ph_lbl is not None:
+                ph_lbl.setText(f"⏳  Décodage de {name}…")
+
+        # Parse l'en-tête (rapide)
         try:
             self._last_cfg = parse_header(path)
         except Exception:
             self._last_cfg = FlightConfig()
 
         # Auto-suggestion taille
-        hint = self._last_cfg.size_hint()
+        hint = self._last_cfg.size_hint() if self._last_cfg else None
         if hint and hint in DRONE_SIZES:
-            self._size_combo.blockSignals(True)
-            self._size_combo.setCurrentText(hint)
-            self._size_combo.blockSignals(False)
+            cb = self.profile_view.size_combo.findChild(QComboBox)
+            cb.blockSignals(True); cb.setCurrentText(hint); cb.blockSignals(False)
 
-        # Lance le décodage dans un thread séparé (évite le freeze UI)
-        self._pending_path = path
+        # Lance le décodage dans un thread
         self._worker = DecodeWorker(self.parser, path)
         self._worker.done.connect(lambda sessions: self._on_decode_done(sessions, path))
         self._worker.error.connect(self._on_decode_error)
         self._worker.start()
 
     def _on_decode_error(self, msg: str):
-        name = Path(getattr(self, '_pending_path', '')).name
+        name = Path(self._current_path or "").name
         self.status.showMessage(f"❌  Erreur : {msg}")
-        self.drop_area.setText(
-            f"❌  Échec du chargement de {name}\n"
-            "Glissez un fichier .bbl / .bfl ici"
-        )
+        self.temp_bar.set_file_label(f"❌  {name}", 0)
+        for ph in self._view_placeholders.values():
+            ph_lbl = ph.findChild(QLabel)
+            if ph_lbl is not None:
+                ph_lbl.setText(f"❌  Échec du chargement\n{msg}")
 
     def _on_decode_done(self, sessions: list, path: str):
-        name = Path(path).name
-
-        # Calcule analyses + rapports
-        size    = self._size_combo.currentText()
-        style   = self._style_combo.currentText()
-        battery = self._battery_combo.currentText()
-        bat_cells = int(battery[:-1]) if battery != 'Auto' else 0
-
-        feel = self._feel_box.current_feel()
-        motor_temp = self._motor_temp_box.current()
-        feedback = self._pilot_fb_box.current()
-        session_analyses = []
-        session_reports  = []
         try:
-            for i, df in enumerate(sessions):
+            self._sessions = sessions
+            name = Path(path).name
+
+            size    = self.profile_view.get_size()
+            style   = self.profile_view.get_style()
+            battery = self.profile_view.get_battery()
+            bat_cells = int(battery[:-1]) if battery != 'Auto' else 0
+            feel    = self.profile_view.feel_box.current_feel()
+            mtemp   = self.temp_bar.current()
+            fb      = self.profile_view.pilot_fb.current()
+
+            self._analyses = []
+            self._reports  = []
+            for df in sessions:
                 sa = analyze(df, self._last_cfg)
                 rp = generate_report(sa, self._last_cfg, size, style, bat_cells,
-                                     feel, motor_temp, feedback)
-                session_analyses.append(sa)
-                session_reports.append(rp)
-                tab = self._build_session_tab(df, self._last_cfg, sa, rp)
-                dur = self._duration(df)
-                self.session_tabs.addTab(tab, f"Session {i + 1}  ({dur})")
-        except Exception as exc:
-            self._on_decode_error(f"Erreur lors de la construction de l'interface : {exc}")
-            return
+                                     feel, mtemp, fb)
+                self._analyses.append(sa)
+                self._reports.append(rp)
 
-        # Si référence disponible → ajouter un onglet de comparaison
-        if self._reference is not None and session_analyses:
-            cmp_tab = self._build_comparison_tab(
-                session_analyses[0], session_reports[0],
-                self._last_cfg, size, style, name
+            # Met à jour la barre top (file + sessions)
+            self.temp_bar.set_file_label(name, len(sessions))
+            session_labels = [
+                f"Session {i+1}  ({self._duration(df)})" for i, df in enumerate(sessions)
+            ]
+            self.temp_bar.set_sessions(session_labels)
+            self._current_session_idx = 0
+
+            # Si référence : injecte la vue de comparaison
+            if self._reference is not None:
+                self.sidebar.set_view_visible('comparison', True)
+
+            # Construit toutes les vues à partir de la session courante
+            self._rebuild_session_views()
+
+            # Première fois : active toute la nav
+            if not self._has_loaded:
+                self._has_loaded = True
+                self.sidebar.set_buttons_enabled(True)
+                self.sidebar.set_apply_enabled(True)
+                self.sidebar.set_reference_enabled(True)
+                # Switch direct vers le diagnostic
+                self.sidebar.set_active('diagnostic')
+                self._on_view_requested('diagnostic')
+
+            total_rows = sum(len(s) for s in sessions)
+            self.status.showMessage(
+                f"✅  {name}  —  {len(sessions)} session(s), {total_rows:,} points"
             )
-            self.session_tabs.addTab(cmp_tab, "📊  Comparaison")
-            self.session_tabs.setCurrentIndex(self.session_tabs.count() - 1)
+        except Exception as exc:
+            self._on_decode_error(f"Construction de l'interface : {exc}")
 
-        # Stocke le contexte courant pour usage futur
-        self._current_context = {
-            'file': name, 'sessions': sessions,
-            'analyses': session_analyses, 'reports': session_reports,
-            'cfg': self._last_cfg, 'size': size, 'style': style,
-        }
-
-        self.session_tabs.setVisible(True)
-        total_rows = sum(len(s) for s in sessions)
-        self.status.showMessage(
-            f"✅  {name}  —  {len(sessions)} session(s), {total_rows:,} points"
-        )
-        self.drop_area.setText(
-            f"✅  {name}  —  {len(sessions)} session(s)   "
-            "(glissez un autre fichier pour remplacer)"
-        )
-        self._btn_set_ref.setEnabled(True)
-        self._btn_apply.setEnabled(True)
-
-        # Premier chargement réussi → révèle les contrôles masqués
-        if not self._has_loaded:
-            self._has_loaded = True
-            self._selectors_widget.setVisible(True)
-            self._feel_box.setVisible(True)
-            self._motor_temp_box.setVisible(True)
-            self._pilot_fb_box.setVisible(True)
-            self._btn_apply.setVisible(True)
-            self._btn_set_ref.setVisible(True)
-            self._ref_label.setVisible(True)
-
-    def _on_profile_changed(self, _=None):
-        """Relance l'analyse si un fichier est déjà chargé."""
-        if self._last_cfg is None or self.session_tabs.count() == 0:
+    def _rebuild_session_views(self):
+        """Reconstruit les vues à partir de la session courante."""
+        if not self._sessions:
             return
-        size    = self._size_combo.currentText()
-        style   = self._style_combo.currentText()
-        battery = self._battery_combo.currentText()
-        bat_cells = int(battery[:-1]) if battery != 'Auto' else 0
+        idx = self._current_session_idx
+        df  = self._sessions[idx]
+        sa  = self._analyses[idx]
+        rp  = self._reports[idx]
+        cfg = self._last_cfg
+        size = self.profile_view.get_size()
 
-        for i in range(self.session_tabs.count()):
-            if self.session_tabs.tabText(i).startswith("📊"):
-                continue
-            widget = self.session_tabs.widget(i)
-            inner_tabs = widget.findChild(QTabWidget)
-            if inner_tabs is None:
-                continue
-            diag_idx = None
-            for j in range(inner_tabs.count()):
-                if 'Diag' in inner_tabs.tabText(j):
-                    diag_idx = j
-                    break
-            if diag_idx is None:
-                continue
-            sa = getattr(widget, '_sa', None)
-            if sa is None:
-                continue
-            feel = self._feel_box.current_feel()
-            motor_temp = self._motor_temp_box.current()
-            feedback = self._pilot_fb_box.current()
+        # Helper : remplace un placeholder dans le stack par un vrai widget
+        def _replace(view_id: str, new_widget: QWidget):
+            old = self._view_placeholders.get(view_id)
+            if old is None:
+                self.stack.addWidget(new_widget)
+                self._view_placeholders[view_id] = new_widget
+                return
+            current = (self.stack.currentWidget() is old)
+            self.stack.removeWidget(old)
+            old.deleteLater()
+            self.stack.addWidget(new_widget)
+            self._view_placeholders[view_id] = new_widget
+            if current:
+                self.stack.setCurrentWidget(new_widget)
+
+        _replace('diagnostic', DiagnosticWidget(
+            cfg, rp, size, flight_type=getattr(sa, 'flight_type', None), sa=sa
+        ))
+        _replace('gyroscope',  GyroPlotWidget(df))
+        for i, axis_name in enumerate(AXIS_NAMES):
+            view_id = f'pid_{axis_name.lower()}'
+            if f'axisP[{i}]' in df.columns:
+                _replace(view_id, PidPlotWidget(df, i, axis_name))
+        if 'motor[0]' in df.columns:
+            _replace('motors', MotorPlotWidget(df))
+        _replace('fft', FftWidget(df, cfg))
+
+        # Comparaison
+        if self._reference is not None:
+            cmp_widget = self._build_comparison_widget(sa, rp, cfg, Path(self._current_path).name)
+            _replace('comparison', cmp_widget)
+
+    # ------------------------------------------------------------------
+    # Application du profil & ressenti
+    # ------------------------------------------------------------------
+
+    def _on_apply(self, *_args):
+        """Régénère le diagnostic avec le profil + ressenti courants."""
+        if not self._sessions:
+            return
+        size    = self.profile_view.get_size()
+        style   = self.profile_view.get_style()
+        battery = self.profile_view.get_battery()
+        bat_cells = int(battery[:-1]) if battery != 'Auto' else 0
+        feel    = self.profile_view.feel_box.current_feel()
+        mtemp   = self.temp_bar.current()
+        fb      = self.profile_view.pilot_fb.current()
+
+        # Régénère les rapports pour TOUTES les sessions
+        self._reports = []
+        for sa in self._analyses:
             rp = generate_report(sa, self._last_cfg, size, style, bat_cells,
-                                 feel, motor_temp, feedback)
-            new_diag = DiagnosticWidget(self._last_cfg, rp, size,
-                                        flight_type=getattr(sa, 'flight_type', None),
-                                        sa=sa)
-            inner_tabs.removeTab(diag_idx)
-            inner_tabs.insertTab(diag_idx, new_diag, "Diagnostic")
-            inner_tabs.setCurrentIndex(diag_idx)
-        self.status.showMessage(
-            f"Profil appliqué : {size} / {style}"
-            + (f" / {battery}" if battery != 'Auto' else "")
-        )
+                                 feel, mtemp, fb)
+            self._reports.append(rp)
+
+        # Reconstruit les vues de la session courante
+        self._rebuild_session_views()
+
+        # Message contextuel
+        bits = [size, style]
+        if battery != 'Auto':
+            bits.append(battery)
+        if mtemp == MotorTemp.HOT:
+            bits.append("🔥 moteurs chauds")
+        elif mtemp == MotorTemp.COLD:
+            bits.append("❄ moteurs froids")
+        elif mtemp == MotorTemp.WARM:
+            bits.append("🌡 moteurs tièdes")
+        self.status.showMessage("Profil appliqué : " + " / ".join(bits))
+
+    def _on_motor_temp_changed(self, _temp):
+        """Le pilote vient de cliquer sur un état de température — ré-applique direct."""
+        if self._has_loaded:
+            self._on_apply()
+
+    def _on_session_changed(self, idx: int):
+        if 0 <= idx < len(self._sessions):
+            self._current_session_idx = idx
+            self._rebuild_session_views()
 
     # ------------------------------------------------------------------
     # Référence pour comparaison
     # ------------------------------------------------------------------
 
     def _set_as_reference(self):
-        if not hasattr(self, '_current_context'):
+        if not self._sessions:
             return
-        ctx = self._current_context
-        self._reference = dict(ctx)
-        ref_score = ctx['reports'][0].health_score if ctx['reports'] else 0
-        self._score_history = [ref_score]   # réinitialise l'historique à chaque nouvelle référence
-        self._ref_label.setText(
-            f"Référence : {ctx['file']}  ({ctx['size']} / {ctx['style']})"
-        )
+        idx = self._current_session_idx
+        size  = self.profile_view.get_size()
+        style = self.profile_view.get_style()
+        self._reference = {
+            'file':     Path(self._current_path).name if self._current_path else "?",
+            'sessions': self._sessions,
+            'analyses': self._analyses,
+            'reports':  self._reports,
+            'cfg':      self._last_cfg,
+            'size':     size,
+            'style':    style,
+            'idx':      idx,
+        }
+        ref_score = self._reports[idx].health_score if self._reports else 0
+        self._score_history = [ref_score]
+        self.sidebar.set_view_visible('comparison', True)
+        name = self._reference['file']
         self.status.showMessage(
-            f"Référence mémorisée : {ctx['file']}. "
-            "Chargez un nouveau vol pour comparer."
+            f"💾  Référence mémorisée : {name}. Chargez un autre vol pour comparer."
         )
 
-    def _build_comparison_tab(self, new_sa: SessionAnalysis, new_rp: DiagnosticReport,
-                              new_cfg: FlightConfig, size: str, style: str,
-                              new_name: str) -> QWidget:
+    def _build_comparison_widget(
+        self, new_sa: SessionAnalysis, new_rp: DiagnosticReport,
+        new_cfg: FlightConfig, new_name: str,
+    ) -> QWidget:
         ref = self._reference
-        ref_sa = ref['analyses'][0] if ref['analyses'] else None
-        ref_rp = ref['reports'][0] if ref['reports'] else None
+        if ref is None:
+            return self._make_placeholder("Pas de référence définie.")
+        ref_idx = ref['idx']
+        ref_sa = ref['analyses'][ref_idx] if ref_idx < len(ref['analyses']) else None
+        ref_rp = ref['reports'][ref_idx]  if ref_idx < len(ref['reports'])  else None
         if ref_sa is None or ref_rp is None:
-            w = QWidget()
-            QVBoxLayout(w).addWidget(QLabel("Données de référence incomplètes."))
-            return w
+            return self._make_placeholder("Données de référence incomplètes.")
 
-        # Mise à jour de l'historique des scores et détection d'oscillation
         self._score_history.append(new_rp.health_score)
         is_oscillating = self._detect_oscillation()
 
         return ComparisonWidget(
             ref_sa, ref_rp, ref['cfg'], ref['file'],
             new_sa, new_rp, new_cfg, new_name,
-            size, style,
-            is_oscillating=is_oscillating
+            self.profile_view.get_size(), self.profile_view.get_style(),
+            is_oscillating=is_oscillating,
         )
 
     def _detect_oscillation(self) -> bool:
@@ -835,34 +932,11 @@ class MainWindow(QMainWindow):
         if len(h) < 3:
             return False
         a, b, c = h[-3], h[-2], h[-1]
-        # Monte puis descend, ou descend puis monte (rebond de ≥3 pts)
         return (b - a >= 3 and b - c >= 3) or (a - b >= 3 and c - b >= 3)
 
     # ------------------------------------------------------------------
-    # Construction des onglets par session
+    # Utils
     # ------------------------------------------------------------------
-
-    def _build_session_tab(self, df: pd.DataFrame, cfg: FlightConfig,
-                            sa: SessionAnalysis, rp: DiagnosticReport) -> QWidget:
-        widget = QWidget()
-        widget._df = df
-        widget._sa = sa
-        layout = QVBoxLayout(widget)
-        layout.setContentsMargins(0, 2, 0, 0)
-
-        inner = QTabWidget()
-        inner.addTab(GyroPlotWidget(df), "Gyroscope")
-        for i, axis_name in enumerate(AXIS_NAMES):
-            if f'axisP[{i}]' in df.columns:
-                inner.addTab(PidPlotWidget(df, i, axis_name), f"PID {axis_name}")
-        if 'motor[0]' in df.columns:
-            inner.addTab(MotorPlotWidget(df), "Moteurs")
-        inner.addTab(FftWidget(df, cfg), "FFT")
-        inner.addTab(DiagnosticWidget(cfg, rp, self._size_combo.currentText(),
-                                      flight_type=sa.flight_type, sa=sa), "Diagnostic")
-
-        layout.addWidget(inner)
-        return widget
 
     @staticmethod
     def _duration(df: pd.DataFrame) -> str:
