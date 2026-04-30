@@ -661,11 +661,40 @@ def _welch_psd(signal: np.ndarray, fs: float,
 
 
 def _fly_mask(df: pd.DataFrame) -> np.ndarray:
+    """Sections "en vol" — étend le critère throttle > 1100 pour ne PAS
+    exclure les flips/rolls où le pilote coupe les gaz pendant la rotation
+    (typique freestyle : pitch flip avant = throttle coupé en chute libre).
+
+    Critère "en vol" = au moins UN de :
+      - throttle > THROTTLE_FLY_MIN (vol normal)
+      - rotation gyro active (|gyro| > 100 °/s sur un axe = manœuvre)
+      - commande pilote active (|setpoint| > 80 °/s = stick poussé)
+    """
+    n = len(df)
+    base = np.zeros(n, dtype=bool)
+
     if 'rcCommand[3]' in df.columns:
-        vals = df['rcCommand[3]'].to_numpy(dtype=np.float64)
-        mask = vals > THROTTLE_FLY_MIN
-        if mask.sum() > 100:
-            return mask
+        thr = df['rcCommand[3]'].to_numpy(dtype=np.float64)
+        base |= (thr > THROTTLE_FLY_MIN)
+
+    # Rotation active : flip / roll / rotation marquée
+    for ax in range(3):
+        col = f'gyroADC[{ax}]'
+        if col in df.columns:
+            g = df[col].to_numpy(dtype=np.float64)
+            base |= (np.abs(g) > 100.0)
+
+    # Commande pilote active : stick clairement déplacé
+    for ax in range(3):
+        col = f'setpoint[{ax}]'
+        if col in df.columns:
+            sp = df[col].to_numpy(dtype=np.float64)
+            base |= (np.abs(sp) > 80.0)
+
+    if base.sum() > 100:
+        return base
+
+    # Fallback motor : ancien comportement si on n'a rien trouvé
     if 'motor[0]' in df.columns:
         vals = df['motor[0]'].to_numpy(dtype=np.float64)
         valid = vals[vals > 0]
@@ -674,7 +703,7 @@ def _fly_mask(df: pd.DataFrame) -> np.ndarray:
             max_v = float(np.percentile(valid, 99))
             threshold = idle + MOTOR_FLY_RATIO * (max_v - idle)
             return vals > threshold
-    return np.ones(len(df), dtype=bool)
+    return np.ones(n, dtype=bool)
 
 
 def _motor_imbalance(df: pd.DataFrame, fly_mask: np.ndarray) -> float:
