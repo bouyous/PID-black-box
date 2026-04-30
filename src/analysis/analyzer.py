@@ -92,6 +92,16 @@ class AxisAnalysis:
     # Équilibre moteurs
     motor_imbalance: float = 0.0
 
+    # Vent / perturbations externes : ratio gyro_std / sp_std en sections
+    # calmes (stick doux). Si gyro très agité ET stick calme = le drone subit
+    # une force externe (vent, turbulences) — pas un manque d'I.
+    # 0   = pas de perturbation détectée
+    # 0.5 = vent modéré
+    # 1.0 = vent fort / rafales (aucune chance qu'un manque d'I crée ça)
+    wind_disturbance_score: float = 0.0
+    gyro_std_calm: float = 0.0       # σ(gyro) sur sections calmes (deg/s)
+    sp_std_calm: float = 0.0         # σ(setpoint) sur sections calmes (deg/s)
+
 
 @dataclass
 class FlightTypeResult:
@@ -425,6 +435,29 @@ def _detect_drift(aa: AxisAnalysis, gyro: np.ndarray, sp: np.ndarray,
 
     aa.drift_score = float(min(1.0, max(rel * 1.5, abs_contrib)))
     aa.drift_freq_hz = peak_f
+
+    # Détection PERTURBATION EXTERNE (vent / rafales) :
+    #   Quand le pilote a le stick calme, on devrait voir un gyro calme.
+    #   Si le gyro reste très agité malgré un setpoint quasi nul, ce n'est
+    #   pas un défaut PID (un manque d'I ne crée pas d'agitation gyro
+    #   spontanée — il créerait une dérive lente UNI-directionnelle).
+    #   C'est le drone qui SUBIT une force externe → vent fort / rafales.
+    sp_calm_concat = np.concatenate([sp[s:e] for s, e in runs])
+    if len(sp_calm_concat) >= 256:
+        gyro_std = float(np.std(gyro_calm))
+        sp_std = float(np.std(sp_calm_concat))
+        aa.gyro_std_calm = gyro_std
+        aa.sp_std_calm = sp_std
+        # Ratio gyro/setpoint en sections calmes
+        # - sticks vraiment calmes (< 30 deg/s std)
+        # - gyro très agité (> 30 deg/s std)
+        # - ratio > 3 → vent qui domine la boucle de réponse
+        if sp_std < 30 and gyro_std > 30:
+            ratio = gyro_std / max(sp_std, 1.0)
+            # Calibration empirique : ratio 3 = perturbation modérée,
+            # ratio 8+ = vent fort qui domine
+            aa.wind_disturbance_score = float(min(1.0,
+                                                  max(0.0, (ratio - 3.0) / 6.0)))
 
 
 def _detect_pid_oscillation(aa: AxisAnalysis, gyro: np.ndarray, sp: np.ndarray,

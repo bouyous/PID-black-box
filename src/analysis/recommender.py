@@ -1230,10 +1230,39 @@ def _check_axis(aa: AxisAnalysis, cfg: FlightConfig, report: DiagnosticReport,
             (aa.has_oscillation and aa.oscillation_score > style['osc_target'])
             or aa.has_pid_oscillation
         )
-        if oscillating:
-            # On ne touche pas I. Le drift résiduel sera corrigé par les
-            # recommandations P/D ci-dessus.
-            pass
+        # Garde-fou v1.9.4-a : drift_score est un score RELATIF (pic / bande
+        # de PSD). Sur un vol stationnaire calme, un pic à 4 Hz dans un
+        # gyro à 15 °/s d'écart-type peut donner drift_score=0.8 alors que
+        # le drone est en réalité immobile à ±15 °/s. Augmenter I dans ce
+        # cas n'apporte rien et peut empirer si le pilote vole ensuite
+        # vraiment. On exige un seuil d'AMPLITUDE absolue gyro avant de
+        # toucher I.
+        amplitude_too_small = (aa.gyro_std_calm > 0
+                               and aa.gyro_std_calm < 25.0)
+
+        # Garde-fou v1.9.4-b : si le gyro est agité ALORS QUE le stick est
+        # calme = perturbation EXTERNE (vent / rafales). Augmenter I dans
+        # ce cas est contre-productif : I sature, génère de l'overshoot et
+        # aggrave le tremblement.
+        windy = aa.wind_disturbance_score > 0.4
+
+        if oscillating or windy or amplitude_too_small:
+            # On ne touche pas I.
+            if amplitude_too_small and not oscillating and not windy:
+                report.summary.append(
+                    f"📏  {aa.name}: drift_score {aa.drift_score:.2f} "
+                    f"mais amplitude gyro réelle faible "
+                    f"(σ={aa.gyro_std_calm:.0f}°/s < 25). Le 'drift' détecté "
+                    f"est dans le bruit — hausse de I REFUSÉE (inutile)."
+                )
+            elif windy and not oscillating:
+                report.summary.append(
+                    f"🌬  {aa.name}: gyro agité (σ={aa.gyro_std_calm:.0f}°/s) "
+                    f"alors que le stick est calme (σ={aa.sp_std_calm:.0f}°/s) "
+                    f"→ perturbation externe (vent/rafales). Hausse de I "
+                    f"REFUSÉE — augmenter I ici sature l'I-term et amplifie "
+                    f"le tremblement au lieu de le réduire."
+                )
         else:
             # Remonter I (typique : oscillation gauche/droite en ligne droite).
             # Sur les gros drones (7"/10", i_bias='low'), on boost moins fort
@@ -1427,7 +1456,10 @@ def _check_axis(aa: AxisAnalysis, cfg: FlightConfig, report: DiagnosticReport,
 
     if style.get('prefer_high_i') and i_cur > 0:
         i_min_target = int(i_range[1] * 0.75)
-        if i_cur < i_min_target and aa.drift_score > style['drift_target'] * 0.5:
+        # Garde-fou vent : si le drift est causé par du vent (gyro agité,
+        # stick calme), ne PAS forcer I haut — ça empire le tremblement.
+        if (i_cur < i_min_target and aa.drift_score > style['drift_target'] * 0.5
+                and aa.wind_disturbance_score <= 0.4):
             already = any(r.param == f"i_{AXIS_PARAM[ax]}" and r.suggested != r.current
                           for r in report.recommendations)
             if not already:
