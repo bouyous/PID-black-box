@@ -201,7 +201,8 @@ class DiagnosticReport:
         adj = compute_sliders(self.recommendations, self._cfg, self.filter_recommendations)
         return dump_sliders_cli(adj, self._cfg, self.health_score,
                                 self.drone_size, self.flying_style,
-                                self.filter_recommendations)
+                                self.filter_recommendations,
+                                self.recommendations)
 
 
 # ---------------------------------------------------------------------------

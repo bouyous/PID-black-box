@@ -37,10 +37,15 @@ class SliderAdjustments:
     gyro_filter_mult: int = 100
     # Deltas bruts pour diagnostic
     notes: list[str] = None
+    # Sliders qui ont été clampés à leur min/max (= reco non appliquée
+    # complètement par le slider — il faut un fallback en PID brut).
+    saturated: set[str] = None
 
     def __post_init__(self):
         if self.notes is None:
             self.notes = []
+        if self.saturated is None:
+            self.saturated = set()
 
 
 def _clamp(v: int, lo: int, hi: int) -> int:
@@ -53,29 +58,44 @@ def _avg(xs: list[float]) -> float:
 
 def compute_sliders(recommendations: list, cfg: FlightConfig,
                     filter_reco_lines: list[str]) -> SliderAdjustments:
-    """Agrège les recos PID en ajustements sliders BF 4.5."""
-    # Collecte des deltas relatifs (fractions : -0.10 = -10%)
-    # On ne garde que roll+pitch car les sliders agissent surtout là (yaw suit master).
-    deltas = {'p': [], 'i': [], 'd': [], 'd_min': [], 'f': []}
-    pitch_specific = {'p': [], 'i': []}
+    """Agrège les recos PID en ajustements sliders BF 4.5.
 
+    v1.9.6 : DÉDUPLIQUE par paramètre exact avant d'agréger. Auparavant,
+    deux recos sur le même `d_pitch` (oscillation + propwash) faisaient
+    grimper le slider de la somme des deltas → saturation à 200.
+    Maintenant on prend le MAX absolu par paramètre distinct.
+    """
+    # Étape 1 : dédupliquer par nom exact (un seul delta par param)
+    by_param: dict[str, float] = {}
     for r in recommendations:
         if r.current == 0 or r.suggested == r.current:
             continue
         d = (r.suggested - r.current) / r.current
-        if r.param.startswith('p_roll') or r.param.startswith('p_pitch'):
+        # Si plusieurs recos sur le même param : on garde celle de plus
+        # grande amplitude (en valeur absolue) — c'est la plus représentative.
+        if r.param in by_param:
+            if abs(d) > abs(by_param[r.param]):
+                by_param[r.param] = d
+        else:
+            by_param[r.param] = d
+
+    # Étape 2 : agrégation par catégorie
+    deltas: dict[str, list[float]] = {'p': [], 'i': [], 'd': [], 'd_min': [], 'f': []}
+    pitch_specific: dict[str, list[float]] = {'p': [], 'i': []}
+    for param, d in by_param.items():
+        if param.startswith('p_roll') or param.startswith('p_pitch'):
             deltas['p'].append(d)
-            if r.param.startswith('p_pitch'):
+            if param.startswith('p_pitch'):
                 pitch_specific['p'].append(d)
-        elif r.param.startswith('i_roll') or r.param.startswith('i_pitch'):
+        elif param.startswith('i_roll') or param.startswith('i_pitch'):
             deltas['i'].append(d)
-            if r.param.startswith('i_pitch'):
+            if param.startswith('i_pitch'):
                 pitch_specific['i'].append(d)
-        elif r.param.startswith('d_min'):
+        elif param.startswith('d_min'):
             deltas['d_min'].append(d)
-        elif r.param.startswith('d_roll') or r.param.startswith('d_pitch'):
+        elif param.startswith('d_roll') or param.startswith('d_pitch'):
             deltas['d'].append(d)
-        elif r.param.startswith('f_roll') or r.param.startswith('f_pitch'):
+        elif param.startswith('f_roll') or param.startswith('f_pitch'):
             deltas['f'].append(d)
 
     adj = SliderAdjustments(
@@ -118,7 +138,11 @@ def compute_sliders(recommendations: list, cfg: FlightConfig,
 
     # D
     if d_delta != 0:
-        adj.d_gain = _clamp(adj.d_gain * (1 + d_delta), SLIDER_MIN, SLIDER_MAX)
+        target = adj.d_gain * (1 + d_delta)
+        clamped = _clamp(target, SLIDER_MIN, SLIDER_MAX)
+        if abs(target - clamped) >= 1.0:
+            adj.saturated.add('simplified_d_gain')
+        adj.d_gain = clamped
 
     # D_min / D_max : augmenter D_min = réduire l'écart D_max - D_min
     # dmax_gain élevé = beaucoup de D dynamique (D_max >> D_min)
@@ -131,7 +155,11 @@ def compute_sliders(recommendations: list, cfg: FlightConfig,
 
     # FF
     if f_delta != 0:
-        adj.feedforward_gain = _clamp(adj.feedforward_gain * (1 + f_delta), SLIDER_FF_MIN, SLIDER_MAX)
+        target = adj.feedforward_gain * (1 + f_delta)
+        clamped = _clamp(target, SLIDER_FF_MIN, SLIDER_MAX)
+        if abs(target - clamped) >= 1.0:
+            adj.saturated.add('simplified_feedforward_gain')
+        adj.feedforward_gain = clamped
 
     # Pitch vs roll : si les recos pitch ne vont pas dans le même sens que roll global,
     # on tire pitch_pi_gain dans la direction du pitch spécifique
@@ -173,9 +201,17 @@ def _extract_filter_factor(lines: list[str], keyword: str, current_hz: int) -> f
 
 def dump_sliders_cli(adj: SliderAdjustments, cfg: FlightConfig,
                      health_score: int, drone_size: str, flying_style: str,
-                     filter_reco_lines: list[str] = None) -> str:
-    """Génère le dump CLI en mode sliders PID (filtres gardés en raw)."""
+                     filter_reco_lines: list[str] = None,
+                     recommendations: list = None) -> str:
+    """Génère le dump CLI en mode sliders PID (filtres gardés en raw).
+
+    v1.9.6 : si un slider sature (= 20 ou = 200), on bascule sur le PID
+    BRUT pour ce paramètre — le slider ne pourrait pas appliquer la
+    recommandation jusqu'au bout. Évite la confusion 'simplified_d_gain=200'
+    qui semble énorme alors que ça reflète juste la saturation.
+    """
     filter_reco_lines = filter_reco_lines or []
+    recommendations = recommendations or []
 
     lines = [
         "# ============================================================",
@@ -199,11 +235,26 @@ def dump_sliders_cli(adj: SliderAdjustments, cfg: FlightConfig,
     def _fmt(v: int) -> str:
         return f"{v/100:.2f}"
 
+    # Map slider → familles de recos qu'il pilote (pour le fallback brut)
+    SATURATED_FALLBACK = {
+        'simplified_d_gain':           ('d_roll', 'd_pitch'),
+        'simplified_dmax_gain':        ('d_min_roll', 'd_min_pitch'),
+        'simplified_feedforward_gain': ('f_roll', 'f_pitch', 'f_yaw'),
+        'simplified_pi_gain':          ('p_roll', 'p_pitch'),
+        'simplified_i_gain':           ('i_roll', 'i_pitch'),
+    }
+
     changes: list[tuple[str, int, int, str]] = []
+    saturated: set[str] = set(adj.saturated)
 
     def _emit(name: str, cur: int, new: int, why: str = ""):
-        if new != cur:
-            changes.append((name, cur, new, why))
+        if new == cur:
+            return
+        if name in saturated:
+            # Slider clampé : on n'émet PAS la ligne slider — le fallback
+            # PID brut sera émis plus bas pour traduire la reco.
+            return
+        changes.append((name, cur, new, why))
 
     _emit('simplified_master_multiplier', cfg.simplified_master or 100,
           adj.master_multiplier, "Multiplicateur Maître")
@@ -220,13 +271,61 @@ def dump_sliders_cli(adj: SliderAdjustments, cfg: FlightConfig,
     _emit('simplified_pitch_pi_gain', cfg.simplified_pitch_pi_gain,
           adj.pitch_pi_gain, "Suivi du Pitch (Pitch:Roll P,I,FF)")
 
-    if not changes:
+    # Helper : déduplique recos par param (garde la plus grande amplitude).
+    def _dedup_recos(recos: list) -> list:
+        by_param: dict[str, object] = {}
+        for r in recos:
+            cur = by_param.get(r.param)
+            if cur is None or abs(r.suggested - r.current) > abs(cur.suggested - cur.current):
+                by_param[r.param] = r
+        return list(by_param.values())
+
+    # Pour chaque slider saturé, on ajoute les recos PID brutes pour les
+    # paramètres qu'il était censé piloter (dédupliquées).
+    raw_fallback_lines: list[str] = []
+    emitted_params: set[str] = set()
+    for slider_name in saturated:
+        prefixes = SATURATED_FALLBACK.get(slider_name, ())
+        matched = [r for r in recommendations
+                   if any(r.param == pre or r.param.startswith(pre + '_')
+                          for pre in prefixes)
+                   and r.suggested != r.current]
+        matched = _dedup_recos(matched)
+        if not matched:
+            continue
+        raw_fallback_lines.append(
+            f"# Slider {slider_name} sature — bascule en PID brut :"
+        )
+        for r in matched:
+            raw_fallback_lines.append(r.to_cli_line())
+            emitted_params.add(r.param)
+
+    # Recos sur YAW (d_yaw, f_yaw) : non couvertes par les sliders P&I/D
+    # qui ne s'appliquent qu'à roll+pitch. À émettre toujours en brut.
+    yaw_recos = [r for r in recommendations
+                 if r.param.endswith('_yaw') and r.suggested != r.current
+                 and r.param not in emitted_params]
+    yaw_recos = _dedup_recos(yaw_recos)
+    if yaw_recos:
+        raw_fallback_lines.append("# YAW (non couvert par les sliders) :")
+        for r in yaw_recos:
+            raw_fallback_lines.append(r.to_cli_line())
+            emitted_params.add(r.param)
+
+    if not changes and not raw_fallback_lines:
         lines.append("# Aucun ajustement slider nécessaire.")
     else:
         for name, cur, new, why in changes:
+            # Indication du saut effectif sur l'effective PID (estimation)
+            jump_pct = (new - cur) / max(cur, 1) * 100
             lines.append(
-                f"set {name} = {new}    # {_fmt(cur)} → {_fmt(new)} — {why}"
+                f"set {name} = {new}    # slider {_fmt(cur)} → {_fmt(new)} "
+                f"({jump_pct:+.0f}% effectif sur le PID) — {why}"
             )
+
+    if raw_fallback_lines:
+        lines += ["", "# --- PID brut (sliders saturés) ---"]
+        lines += raw_fallback_lines
 
     if filter_reco_lines:
         lines += ["", "# --- Filtres (valeurs brutes) ---"]
