@@ -20,6 +20,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+import numpy as np
 import pyqtgraph as pg
 
 from analysis.analyzer import FlightTypeResult, SessionAnalysis
@@ -1273,6 +1274,10 @@ class CheckOKTab(QWidget):
 # Onglet Step response - courbes type PID Toolbox
 # ---------------------------------------------------------------------------
 
+_STEP_COLORS = ['#e66a00', '#0969da', '#2da44e', '#8250df', '#bf3989',
+                '#57606a', '#d1242f', '#1f883d', '#953800', '#0550ae']
+
+
 def _style_step_plot(plot: pg.PlotWidget, title: str, y_label: str):
     plot.setBackground('#f5f5f5')
     plot.setTitle(title, color='#111', size='11pt')
@@ -1289,9 +1294,22 @@ def _add_hline(plot: pg.PlotWidget, y: float, color: str = '#666'):
     plot.addItem(line)
 
 
+def _axis_pid_text(cfg: FlightConfig, axis: int, n: int) -> str:
+    p = cfg.pid_p[axis] if axis < len(cfg.pid_p) else 0
+    i = cfg.pid_i[axis] if axis < len(cfg.pid_i) else 0
+    d = cfg.pid_d[axis] if axis < len(cfg.pid_d) else 0
+    dm = cfg.d_min[axis] if axis < len(cfg.d_min) else 0
+    f = cfg.pid_f[axis] if axis < len(cfg.pid_f) else 0
+    return f"{p},{i},{d},{dm},{f}  (n={n})"
+
+
 class StepResponseTab(QWidget):
-    def __init__(self, sa: SessionAnalysis | None):
+    def __init__(self, cfg: FlightConfig, analyses: list[SessionAnalysis] | None,
+                 current_idx: int = 0):
         super().__init__()
+        analyses = analyses or []
+        if not analyses:
+            analyses = []
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -1307,8 +1325,16 @@ class StepResponseTab(QWidget):
             "La latence affiche le retard moyen gyro/setpoint.",
             color='#aaa', size=10
         ))
+        has_ff = any(v > 0 for v in cfg.pid_f)
+        if has_ff:
+            root.addWidget(GenericCard(
+                "FeedForward actif",
+                "La step response peut etre influencee par le terme F. "
+                "A lire avec prudence: idealement on s'en sert surtout pour P, I et D.",
+                Severity.WARNING,
+            ))
 
-        if sa is None or not sa.axes:
+        if not analyses or not analyses[current_idx].axes:
             root.addWidget(GenericCard(
                 "Données insuffisantes",
                 "Aucun axe analysable. Il faut des changements de setpoint francs pour construire cette courbe.",
@@ -1324,25 +1350,53 @@ class StepResponseTab(QWidget):
             side_col.setSpacing(8)
 
             any_curve = False
-            for aa in sa.axes[:3]:
-                curve = aa.step_response_curve
+            axis_count = min(3, max((len(sa.axes) for sa in analyses), default=0))
+            x_tests = list(range(1, len(analyses) + 1))
+            for axis in range(axis_count):
                 row = QHBoxLayout()
                 row.setSpacing(8)
 
                 resp = pg.PlotWidget()
                 resp.setMinimumHeight(190)
-                _style_step_plot(resp, f"{AXIS_NAME[aa.axis]} Response", "Response")
+                _style_step_plot(resp, f"{AXIS_NAME[axis]} Response", "Response")
+                resp.setXRange(0, 560)
                 resp.setYRange(0, 1.5)
                 _add_hline(resp, 1.0)
-                if len(curve.time_ms) and len(curve.response):
-                    any_curve = True
-                    resp.plot(
-                        curve.time_ms,
-                        curve.response,
-                        pen=pg.mkPen('#0969da', width=2),
-                        name='Gyro response',
-                    )
-                else:
+
+                info = pg.TextItem("P, I, D, Dm, F", color='#111', anchor=(0, 0))
+                info.setPos(516, 1.43)
+                resp.addItem(info)
+                text_y = 1.32
+
+                peaks: list[tuple[int, float, str]] = []
+                lags: list[tuple[int, float, str]] = []
+                axis_has_curve = False
+                for test_idx, session in enumerate(analyses, start=1):
+                    if axis >= len(session.axes):
+                        continue
+                    aa = session.axes[axis]
+                    curve = aa.step_response_curve
+                    color = _STEP_COLORS[(test_idx - 1) % len(_STEP_COLORS)]
+                    if len(curve.time_ms) and len(curve.response):
+                        any_curve = True
+                        axis_has_curve = True
+                        resp.plot(
+                            curve.time_ms,
+                            curve.response,
+                            pen=pg.mkPen(color, width=2),
+                            name=f'test {test_idx}',
+                        )
+                        peaks.append((test_idx, max(curve.peak, 0.0), color))
+                        lags.append((test_idx, max(aa.tracking_lag_ms, 0.0), color))
+                        label = f"{test_idx}) {_axis_pid_text(cfg, axis, curve.sample_count)}"
+                    else:
+                        label = f"{test_idx}) insufficient data"
+                    txt = pg.TextItem(label, color=color, anchor=(0, 0))
+                    txt.setPos(516, text_y)
+                    resp.addItem(txt)
+                    text_y -= 0.13
+
+                if not axis_has_curve:
                     txt = pg.TextItem("insufficient data", color='#d00', anchor=(0, 0))
                     txt.setPos(16, 1.36)
                     resp.addItem(txt)
@@ -1350,32 +1404,47 @@ class StepResponseTab(QWidget):
 
                 peak = pg.PlotWidget()
                 peak.setMinimumSize(210, 190)
-                _style_step_plot(peak, f"{AXIS_NAME[aa.axis]} Peak", "Peak")
+                _style_step_plot(peak, f"{AXIS_NAME[axis]} Peak", "Peak")
                 peak.setLabel('bottom', 'test', color='#111')
-                peak.setXRange(0, 1)
+                peak.setXRange(0.5, max(1.5, len(analyses) + 0.5))
                 peak.setYRange(0.8, 1.5)
                 _add_hline(peak, 1.0)
-                if len(curve.response):
-                    peak.plot([0.5], [max(curve.peak, 0.0)], pen=None,
-                              symbol='o', symbolBrush='#0969da', symbolSize=10)
+                if peaks:
+                    xs = [p[0] for p in peaks]
+                    ys = [p[1] for p in peaks]
+                    peak.plot(xs, ys, pen=None, symbol='o',
+                              symbolBrush=[p[2] for p in peaks], symbolSize=10)
+                    for x, y, color in peaks:
+                        err = pg.ErrorBarItem(x=np.array([x]), y=np.array([y]),
+                                              top=np.array([0.22]), bottom=np.array([0.18]),
+                                              beam=0.05, pen=pg.mkPen(color, width=1))
+                        peak.addItem(err)
                 else:
                     txt = pg.TextItem("insufficient data", color='#d00', anchor=(0, 0))
-                    txt.setPos(0.05, 1.42)
+                    txt.setPos(0.58, 1.42)
                     peak.addItem(txt)
                 row.addWidget(peak)
 
                 latency = pg.PlotWidget()
                 latency.setMinimumSize(210, 190)
-                _style_step_plot(latency, f"{AXIS_NAME[aa.axis]} Latency", "Latency (ms)")
+                _style_step_plot(latency, f"{AXIS_NAME[axis]} Latency", "Latency (ms)")
                 latency.setLabel('bottom', 'test', color='#111')
-                latency.setXRange(0, 1)
-                latency.setYRange(0, max(60, aa.tracking_lag_ms * 1.5, 20))
-                if len(curve.response):
-                    latency.plot([0.5], [max(aa.tracking_lag_ms, 0.0)], pen=None,
-                                 symbol='o', symbolBrush='#e67e22', symbolSize=10)
+                latency.setXRange(0.5, max(1.5, len(analyses) + 0.5))
+                max_lag = max((v for _, v, _ in lags), default=20.0)
+                latency.setYRange(max(0, max_lag - 8), max(20, max_lag + 8))
+                if lags:
+                    xs = [p[0] for p in lags]
+                    ys = [p[1] for p in lags]
+                    latency.plot(xs, ys, pen=None, symbol='o',
+                                 symbolBrush=[p[2] for p in lags], symbolSize=10)
+                    for x, y, color in lags:
+                        err = pg.ErrorBarItem(x=np.array([x]), y=np.array([y]),
+                                              top=np.array([5.0]), bottom=np.array([5.0]),
+                                              beam=0.05, pen=pg.mkPen(color, width=1))
+                        latency.addItem(err)
                 else:
                     txt = pg.TextItem("insufficient data", color='#d00', anchor=(0, 0))
-                    txt.setPos(0.05, latency.viewRange()[1][1] * 0.84)
+                    txt.setPos(0.58, latency.viewRange()[1][1] * 0.84)
                     latency.addItem(txt)
                 row.addWidget(latency)
                 side_col.addLayout(row)
@@ -1673,15 +1742,19 @@ class DiagnosticWidget(QWidget):
     def __init__(self, cfg: FlightConfig, report: DiagnosticReport,
                  drone_size: str,
                  flight_type: FlightTypeResult | None = None,
-                 sa: SessionAnalysis | None = None):
+                 sa: SessionAnalysis | None = None,
+                 analyses: list[SessionAnalysis] | None = None,
+                 current_session_idx: int = 0):
         super().__init__()
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+        step_analyses = analyses if analyses is not None else ([sa] if sa is not None else [])
 
         tabs = QTabWidget()
         tabs.addTab(ContextTab(cfg, drone_size, flight_type), "📋  Contexte")
         tabs.addTab(RecommendationsTab(report),          "🔍  Diagnostic")
-        tabs.addTab(StepResponseTab(sa),                 "Step response")
+        tabs.addTab(StepResponseTab(cfg, step_analyses, current_session_idx),
+                    "Step response")
         tabs.addTab(PidBalanceTab(sa),                   "P/I/D")
         tabs.addTab(LatencyTab(report, sa, cfg),          "Latence")
         tabs.addTab(SymptomTab(report),                  "🩺  Symptômes")

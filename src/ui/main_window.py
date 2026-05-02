@@ -841,7 +841,8 @@ class MainWindow(QMainWindow):
                 self.stack.setCurrentWidget(new_widget)
 
         _replace('diagnostic', DiagnosticWidget(
-            cfg, rp, size, flight_type=getattr(sa, 'flight_type', None), sa=sa
+            cfg, rp, size, flight_type=getattr(sa, 'flight_type', None), sa=sa,
+            analyses=self._analyses, current_session_idx=idx
         ))
         _replace('gyroscope',  GyroPlotWidget(df))
         for i, axis_name in enumerate(AXIS_NAMES):
