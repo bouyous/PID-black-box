@@ -1735,6 +1735,32 @@ class FlightPlanTab(QWidget):
 
 
 # ---------------------------------------------------------------------------
+# Onglet Expert - regroupe les vues techniques
+# ---------------------------------------------------------------------------
+
+class ExpertTab(QWidget):
+    def __init__(self, cfg: FlightConfig, report: DiagnosticReport,
+                 sa: SessionAnalysis | None,
+                 analyses: list[SessionAnalysis] | None,
+                 current_session_idx: int):
+        super().__init__()
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        tabs = QTabWidget()
+        tabs.setTabPosition(QTabWidget.TabPosition.West)
+        tabs.setDocumentMode(True)
+        tabs.addTab(
+            StepResponseTab(cfg, analyses, current_session_idx),
+            "Courbes\nStep",
+        )
+        tabs.addTab(PidBalanceTab(sa), "Balance\nP/I/D")
+        tabs.addTab(CliDumpTab(report), "CLI\nDump")
+
+        layout.addWidget(tabs)
+
+
+# ---------------------------------------------------------------------------
 # Widget principal de diagnostic (regroupe les 4 onglets)
 # ---------------------------------------------------------------------------
 
@@ -1751,21 +1777,23 @@ class DiagnosticWidget(QWidget):
         step_analyses = analyses if analyses is not None else ([sa] if sa is not None else [])
 
         tabs = QTabWidget()
+        tabs.setTabPosition(QTabWidget.TabPosition.West)
+        tabs.setDocumentMode(True)
         tabs.addTab(ContextTab(cfg, drone_size, flight_type), "📋  Contexte")
         tabs.addTab(RecommendationsTab(report),          "🔍  Diagnostic")
-        tabs.addTab(StepResponseTab(cfg, step_analyses, current_session_idx),
-                    "Step response")
-        tabs.addTab(PidBalanceTab(sa),                   "P/I/D")
         tabs.addTab(LatencyTab(report, sa, cfg),          "Latence")
         tabs.addTab(SymptomTab(report),                  "🩺  Symptômes")
         tabs.addTab(CheckOKTab(report, sa, cfg),         "✅  Check OK")
         tabs.addTab(FlightPlanTab(report),                "Plan de vol")
-        tabs.addTab(CliDumpTab(report),                  "💻  CLI Dump")
+        tabs.addTab(
+            ExpertTab(cfg, report, sa, step_analyses, current_session_idx),
+            "Expert",
+        )
 
         # Aller directement au diagnostic s'il y a des problèmes
         if report.has_issues():
             tabs.setCurrentIndex(1)
         elif report.matched_symptoms:
-            tabs.setCurrentIndex(5)
+            tabs.setCurrentIndex(3)
 
         layout.addWidget(tabs)
