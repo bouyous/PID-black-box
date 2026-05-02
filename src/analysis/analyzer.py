@@ -58,6 +58,15 @@ class PidBalanceMetrics:
 
 
 @dataclass
+class StepResponseCurve:
+    time_ms: np.ndarray = field(default_factory=lambda: np.array([]))
+    response: np.ndarray = field(default_factory=lambda: np.array([]))
+    sample_count: int = 0
+    peak: float = 0.0
+    latency_ms: float = 0.0
+
+
+@dataclass
 class AxisAnalysis:
     axis: int
     name: str
@@ -106,6 +115,7 @@ class AxisAnalysis:
     avg_error_rms: float = 0.0
     tracking_lag_ms: float = 0.0     # retard gyro vs setpoint (indique FF bas)
     pid_balance: PidBalanceMetrics = field(default_factory=PidBalanceMetrics)
+    step_response_curve: StepResponseCurve = field(default_factory=StepResponseCurve)
 
     # Équilibre moteurs
     motor_imbalance: float = 0.0
@@ -438,8 +448,12 @@ def _fill_step_response(aa: AxisAnalysis, t: np.ndarray, gyro: np.ndarray,
             merged.append(s)
     step_starts = np.array(merged)
 
-    win = int(fs * 0.25)
+    win = int(fs * 0.50)
+    curve_len = max(64, int(fs * 0.50))
+    x_src = np.linspace(0, 500, curve_len, endpoint=False)
+    x_dst = np.linspace(0, 500, 160)
     rise_times, overshoots, errors, lags = [], [], [], []
+    norm_curves: list[np.ndarray] = []
 
     for idx in step_starts:
         end = min(idx + win, len(gyro) - 1)
@@ -494,11 +508,29 @@ def _fill_step_response(aa: AxisAnalysis, t: np.ndarray, gyro: np.ndarray,
             if overshoot < 200:
                 overshoots.append(overshoot)
 
+        curve_end = min(idx + curve_len, len(gyro))
+        if curve_end - idx >= max(32, int(fs * 0.12)):
+            g = gyro[idx:curve_end]
+            norm = (g - sp_start) / delta
+            if len(norm) < curve_len:
+                norm = np.pad(norm, (0, curve_len - len(norm)), mode='edge')
+            norm = np.clip(norm, -0.5, 1.8)
+            norm_curves.append(np.interp(x_dst, x_src, norm[:curve_len]))
+
     aa.step_count       = len(step_starts)
     aa.avg_rise_time_ms  = float(np.mean(rise_times))  if rise_times  else 0.0
     aa.avg_overshoot_pct = float(np.mean(overshoots)) if overshoots else 0.0
     aa.avg_error_rms     = float(np.mean(errors))     if errors     else 0.0
     aa.tracking_lag_ms   = float(np.mean(lags))       if lags       else 0.0
+    if norm_curves:
+        avg_curve = np.mean(np.vstack(norm_curves), axis=0)
+        aa.step_response_curve = StepResponseCurve(
+            time_ms=x_dst,
+            response=avg_curve,
+            sample_count=len(norm_curves),
+            peak=float(np.max(avg_curve)),
+            latency_ms=aa.tracking_lag_ms,
+        )
 
 
 def _detect_drift(aa: AxisAnalysis, gyro: np.ndarray, sp: np.ndarray,

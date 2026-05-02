@@ -13,6 +13,7 @@ from analysis.analyzer import (  # noqa: E402
     SessionAnalysis,
     _erpm_to_motor_hz,
     _fill_pid_balance,
+    _fill_step_response,
     _fly_mask,
     _guess_cell_count,
 )
@@ -65,6 +66,25 @@ class AnalyzerRegressionTests(unittest.TestCase):
 
         self.assertAlmostEqual(aa.pid_balance.d_to_p_ratio, 0.55)
         self.assertEqual(aa.pid_balance.verdict, "OK")
+
+    def test_step_response_curve_is_stored_for_real_step(self):
+        fs = 1000.0
+        n = 900
+        t = np.arange(n) / fs
+        sp = np.zeros(n)
+        sp[100:420] = 400.0
+        gyro = np.zeros(n)
+        rise = 1.0 - np.exp(-np.arange(320) / 28.0)
+        gyro[100:420] = 400.0 * rise
+        fall = np.exp(-np.arange(n - 420) / 28.0)
+        gyro[420:] = gyro[419] * fall
+
+        aa = AxisAnalysis(axis=0, name="Roll")
+        _fill_step_response(aa, t, gyro, sp, np.ones(n, dtype=bool), fs)
+
+        self.assertGreater(aa.step_response_curve.sample_count, 0)
+        self.assertEqual(len(aa.step_response_curve.time_ms), 160)
+        self.assertGreater(aa.step_response_curve.peak, 0.8)
 
 
 class RecommenderRegressionTests(unittest.TestCase):

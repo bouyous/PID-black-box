@@ -20,6 +20,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+import pyqtgraph as pg
 
 from analysis.analyzer import FlightTypeResult, SessionAnalysis
 from analysis.header_parser import FlightConfig
@@ -1269,6 +1270,137 @@ class CheckOKTab(QWidget):
 
 
 # ---------------------------------------------------------------------------
+# Onglet Step response - courbes type PID Toolbox
+# ---------------------------------------------------------------------------
+
+def _style_step_plot(plot: pg.PlotWidget, title: str, y_label: str):
+    plot.setBackground('#f5f5f5')
+    plot.setTitle(title, color='#111', size='11pt')
+    plot.setLabel('left', y_label, color='#111')
+    plot.setLabel('bottom', 'Time (ms)', color='#111')
+    plot.showGrid(x=True, y=True, alpha=0.28)
+    plot.setXRange(0, 500)
+    plot.getPlotItem().getAxis('left').setTextPen('#111')
+    plot.getPlotItem().getAxis('bottom').setTextPen('#111')
+
+
+def _add_hline(plot: pg.PlotWidget, y: float, color: str = '#666'):
+    line = pg.InfiniteLine(pos=y, angle=0, pen=pg.mkPen(color, width=1, style=Qt.PenStyle.DashLine))
+    plot.addItem(line)
+
+
+class StepResponseTab(QWidget):
+    def __init__(self, sa: SessionAnalysis | None):
+        super().__init__()
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+
+        inner = QWidget()
+        root = QVBoxLayout(inner)
+        root.setContentsMargins(10, 10, 10, 10)
+        root.setSpacing(8)
+
+        root.addWidget(_label("Step response", bold=True, color='#e0e0e0', size=14))
+        root.addWidget(_label(
+            "Courbe normalisee: 1.0 = consigne atteinte. Peak > 1.0 = overshoot. "
+            "La latence affiche le retard moyen gyro/setpoint.",
+            color='#aaa', size=10
+        ))
+
+        if sa is None or not sa.axes:
+            root.addWidget(GenericCard(
+                "Données insuffisantes",
+                "Aucun axe analysable. Il faut des changements de setpoint francs pour construire cette courbe.",
+                Severity.WARNING,
+            ))
+        else:
+            grid = QHBoxLayout()
+            grid.setSpacing(12)
+
+            response_col = QVBoxLayout()
+            response_col.setSpacing(8)
+            side_col = QVBoxLayout()
+            side_col.setSpacing(8)
+
+            any_curve = False
+            for aa in sa.axes[:3]:
+                curve = aa.step_response_curve
+                row = QHBoxLayout()
+                row.setSpacing(8)
+
+                resp = pg.PlotWidget()
+                resp.setMinimumHeight(190)
+                _style_step_plot(resp, f"{AXIS_NAME[aa.axis]} Response", "Response")
+                resp.setYRange(0, 1.5)
+                _add_hline(resp, 1.0)
+                if len(curve.time_ms) and len(curve.response):
+                    any_curve = True
+                    resp.plot(
+                        curve.time_ms,
+                        curve.response,
+                        pen=pg.mkPen('#0969da', width=2),
+                        name='Gyro response',
+                    )
+                else:
+                    txt = pg.TextItem("insufficient data", color='#d00', anchor=(0, 0))
+                    txt.setPos(16, 1.36)
+                    resp.addItem(txt)
+                response_col.addWidget(resp)
+
+                peak = pg.PlotWidget()
+                peak.setMinimumSize(210, 190)
+                _style_step_plot(peak, f"{AXIS_NAME[aa.axis]} Peak", "Peak")
+                peak.setLabel('bottom', 'test', color='#111')
+                peak.setXRange(0, 1)
+                peak.setYRange(0.8, 1.5)
+                _add_hline(peak, 1.0)
+                if len(curve.response):
+                    peak.plot([0.5], [max(curve.peak, 0.0)], pen=None,
+                              symbol='o', symbolBrush='#0969da', symbolSize=10)
+                else:
+                    txt = pg.TextItem("insufficient data", color='#d00', anchor=(0, 0))
+                    txt.setPos(0.05, 1.42)
+                    peak.addItem(txt)
+                row.addWidget(peak)
+
+                latency = pg.PlotWidget()
+                latency.setMinimumSize(210, 190)
+                _style_step_plot(latency, f"{AXIS_NAME[aa.axis]} Latency", "Latency (ms)")
+                latency.setLabel('bottom', 'test', color='#111')
+                latency.setXRange(0, 1)
+                latency.setYRange(0, max(60, aa.tracking_lag_ms * 1.5, 20))
+                if len(curve.response):
+                    latency.plot([0.5], [max(aa.tracking_lag_ms, 0.0)], pen=None,
+                                 symbol='o', symbolBrush='#e67e22', symbolSize=10)
+                else:
+                    txt = pg.TextItem("insufficient data", color='#d00', anchor=(0, 0))
+                    txt.setPos(0.05, latency.viewRange()[1][1] * 0.84)
+                    latency.addItem(txt)
+                row.addWidget(latency)
+                side_col.addLayout(row)
+
+            grid.addLayout(response_col, stretch=3)
+            grid.addLayout(side_col, stretch=2)
+            root.addLayout(grid)
+
+            if not any_curve:
+                root.addWidget(GenericCard(
+                    "Pas assez de steps",
+                    "Vol stationnaire ou sticks trop doux: c'est normal que la vue reste vide. "
+                    "Fais quelques flips/rolls/yaw francs pour obtenir une courbe.",
+                    Severity.WARNING,
+                ))
+
+        root.addStretch()
+        scroll.setWidget(inner)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(scroll)
+
+
+# ---------------------------------------------------------------------------
 # Onglet Balance PID - lecture visuelle P / I / D / FF
 # ---------------------------------------------------------------------------
 
@@ -1549,6 +1681,7 @@ class DiagnosticWidget(QWidget):
         tabs = QTabWidget()
         tabs.addTab(ContextTab(cfg, drone_size, flight_type), "📋  Contexte")
         tabs.addTab(RecommendationsTab(report),          "🔍  Diagnostic")
+        tabs.addTab(StepResponseTab(sa),                 "Step response")
         tabs.addTab(PidBalanceTab(sa),                   "P/I/D")
         tabs.addTab(LatencyTab(report, sa, cfg),          "Latence")
         tabs.addTab(SymptomTab(report),                  "🩺  Symptômes")
@@ -1560,6 +1693,6 @@ class DiagnosticWidget(QWidget):
         if report.has_issues():
             tabs.setCurrentIndex(1)
         elif report.matched_symptoms:
-            tabs.setCurrentIndex(4)
+            tabs.setCurrentIndex(5)
 
         layout.addWidget(tabs)
