@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QSplitter,
+    QStackedWidget,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -1735,6 +1736,92 @@ class FlightPlanTab(QWidget):
 
 
 # ---------------------------------------------------------------------------
+# Navigation interne lisible : boutons à gauche, contenu à droite
+# ---------------------------------------------------------------------------
+
+class SideNavStack(QWidget):
+    def __init__(self, title: str, pages: list[tuple[str, str, QWidget]],
+                 current_index: int = 0):
+        super().__init__()
+        self._buttons: list[QPushButton] = []
+        self._stack = QStackedWidget()
+
+        root = QHBoxLayout(self)
+        root.setContentsMargins(10, 10, 10, 10)
+        root.setSpacing(10)
+
+        nav = QFrame()
+        nav.setMinimumWidth(190)
+        nav.setMaximumWidth(230)
+        nav.setStyleSheet("""
+            QFrame {
+                background:#242424;
+                border:1px solid #3a3a3a;
+                border-radius:8px;
+            }
+        """)
+        nav_lay = QVBoxLayout(nav)
+        nav_lay.setContentsMargins(10, 10, 10, 10)
+        nav_lay.setSpacing(8)
+
+        nav_lay.addWidget(_label(title, bold=True, color='#f0f0f0', size=13))
+        nav_lay.addWidget(_label(
+            "Lecture simple d'abord, détails avancés à la demande.",
+            color='#8f8f8f', size=9
+        ))
+        nav_lay.addWidget(_separator())
+
+        for idx, (icon, label, widget) in enumerate(pages):
+            btn = QPushButton(f"{icon}  {label}".strip())
+            btn.setCheckable(True)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setMinimumHeight(40)
+            btn.setStyleSheet("""
+                QPushButton {
+                    background:#2b2b2b;
+                    color:#ddd;
+                    border:1px solid #3d3d3d;
+                    border-radius:7px;
+                    padding:7px 10px;
+                    text-align:left;
+                    font-size:12px;
+                    font-weight:600;
+                }
+                QPushButton:hover {
+                    background:#333;
+                    border-color:#5a8fd8;
+                    color:#fff;
+                }
+                QPushButton:checked {
+                    background:#173456;
+                    border:1px solid #4a9eff;
+                    color:#fff;
+                }
+            """)
+            btn.clicked.connect(lambda _checked=False, i=idx: self.setCurrentIndex(i))
+            self._buttons.append(btn)
+            nav_lay.addWidget(btn)
+            self._stack.addWidget(widget)
+
+        nav_lay.addStretch()
+        self._stack.setStyleSheet("""
+            QStackedWidget {
+                background:#1e1e1e;
+                border:1px solid #333;
+                border-radius:8px;
+            }
+        """)
+        root.addWidget(nav)
+        root.addWidget(self._stack, stretch=1)
+        self.setCurrentIndex(max(0, min(current_index, len(pages) - 1)))
+
+    def setCurrentIndex(self, index: int):
+        self._stack.setCurrentIndex(index)
+        for i, btn in enumerate(self._buttons):
+            btn.setChecked(i == index)
+
+
+# ---------------------------------------------------------------------------
 # Onglet Expert - regroupe les vues techniques
 # ---------------------------------------------------------------------------
 
@@ -1746,18 +1833,11 @@ class ExpertTab(QWidget):
         super().__init__()
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-
-        tabs = QTabWidget()
-        tabs.setTabPosition(QTabWidget.TabPosition.West)
-        tabs.setDocumentMode(True)
-        tabs.addTab(
-            StepResponseTab(cfg, analyses, current_session_idx),
-            "Courbes\nStep",
-        )
-        tabs.addTab(PidBalanceTab(sa), "Balance\nP/I/D")
-        tabs.addTab(CliDumpTab(report), "CLI\nDump")
-
-        layout.addWidget(tabs)
+        layout.addWidget(SideNavStack("Mode Expert", [
+            ("📈", "Courbes Step", StepResponseTab(cfg, analyses, current_session_idx)),
+            ("⚙", "Balance P/I/D", PidBalanceTab(sa)),
+            ("💻", "CLI Dump", CliDumpTab(report)),
+        ]))
 
 
 # ---------------------------------------------------------------------------
@@ -1774,26 +1854,19 @@ class DiagnosticWidget(QWidget):
         super().__init__()
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        step_analyses = analyses if analyses is not None else ([sa] if sa is not None else [])
-
-        tabs = QTabWidget()
-        tabs.setTabPosition(QTabWidget.TabPosition.West)
-        tabs.setDocumentMode(True)
-        tabs.addTab(ContextTab(cfg, drone_size, flight_type), "📋  Contexte")
-        tabs.addTab(RecommendationsTab(report),          "🔍  Diagnostic")
-        tabs.addTab(LatencyTab(report, sa, cfg),          "Latence")
-        tabs.addTab(SymptomTab(report),                  "🩺  Symptômes")
-        tabs.addTab(CheckOKTab(report, sa, cfg),         "✅  Check OK")
-        tabs.addTab(FlightPlanTab(report),                "Plan de vol")
-        tabs.addTab(
-            ExpertTab(cfg, report, sa, step_analyses, current_session_idx),
-            "Expert",
-        )
 
         # Aller directement au diagnostic s'il y a des problèmes
+        start = 0
         if report.has_issues():
-            tabs.setCurrentIndex(1)
+            start = 1
         elif report.matched_symptoms:
-            tabs.setCurrentIndex(3)
+            start = 3
 
-        layout.addWidget(tabs)
+        layout.addWidget(SideNavStack("Diagnostic", [
+            ("📋", "Contexte", ContextTab(cfg, drone_size, flight_type)),
+            ("🔍", "Recommandations", RecommendationsTab(report)),
+            ("⏱", "Latence", LatencyTab(report, sa, cfg)),
+            ("🩺", "Symptômes", SymptomTab(report)),
+            ("✅", "Check OK", CheckOKTab(report, sa, cfg)),
+            ("🧭", "Plan de vol", FlightPlanTab(report)),
+        ], current_index=start))

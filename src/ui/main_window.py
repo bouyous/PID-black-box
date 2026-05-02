@@ -53,7 +53,7 @@ from ui.drop_overlay import DropOverlay
 from ui.fft_widget import FftWidget
 from ui.motor_temp_bar import MotorTempBar
 from ui.plot_widget import GyroPlotWidget, MotorPlotWidget, PidPlotWidget
-from ui.recommendation_panel import DiagnosticWidget
+from ui.recommendation_panel import DiagnosticWidget, ExpertTab
 from ui.sidebar import RailSidebar
 
 
@@ -79,27 +79,27 @@ FRAME_TYPE_MAP = {
 # --------------------------------------------------------------------------
 
 DARK_STYLE = """
-QMainWindow, QWidget { background:#1e1e1e; color:#e0e0e0; }
+QMainWindow, QWidget { background:#1e1e1e; color:#e0e0e0; font-family:"Segoe UI Variable", "Segoe UI"; }
 QStatusBar           { background:#111;   color:#999; font-size:12px; }
 
-QTabWidget::pane     { border:1px solid #2d2d2d; background:#1e1e1e; }
-QTabBar::tab         { background:#252525; color:#bbb; padding:6px 14px;
-                       border:1px solid #2d2d2d; border-bottom:none; }
-QTabBar::tab:selected{ background:#1e1e1e; color:#fff; border-bottom:2px solid #4a9eff; }
-QTabBar::tab:hover   { background:#2f2f2f; }
+QTabWidget::pane     { border:1px solid #343434; background:#1e1e1e; border-radius:7px; }
+QTabBar::tab         { background:#252525; color:#bbb; padding:7px 16px;
+                       border:1px solid #3a3a3a; border-radius:7px; margin:3px; }
+QTabBar::tab:selected{ background:#173456; color:#fff; border:1px solid #4a9eff; }
+QTabBar::tab:hover   { background:#303030; border-color:#555; }
 
 QComboBox            { background:#2a2a2a; color:#e0e0e0; border:1px solid #444;
-                       padding:4px 8px; border-radius:3px; }
+                       padding:5px 9px; border-radius:7px; }
 QComboBox::drop-down { border:none; }
 QComboBox QAbstractItemView { background:#2a2a2a; color:#e0e0e0;
                               selection-background-color:#3a3a3a; }
 
 QPushButton          { background:#2a2a2a; color:#e0e0e0; border:1px solid #444;
-                       padding:5px 12px; border-radius:3px; }
+                       padding:6px 13px; border-radius:7px; }
 QPushButton:hover    { background:#333; border-color:#555; }
 QPushButton:disabled { color:#555; border-color:#2d2d2d; }
 
-QGroupBox            { color:#888; border:1px solid #2d2d2d; border-radius:3px;
+QGroupBox            { color:#888; border:1px solid #343434; border-radius:8px;
                        margin-top:10px; padding:8px; }
 QGroupBox::title     { subcontrol-origin: margin; left:8px; }
 
@@ -630,6 +630,7 @@ class MainWindow(QMainWindow):
         self._view_placeholders: dict[str, QWidget] = {}
         for view_id, label in [
             ('diagnostic', "Aucun diagnostic — chargez un fichier blackbox."),
+            ('expert',     "Chargez un fichier blackbox pour accéder au mode Expert."),
             ('gyroscope',  "Glissez un .bbl pour voir les courbes gyro."),
             ('pid_roll',   "Glissez un .bbl pour voir la réponse PID Roll."),
             ('pid_pitch',  "Glissez un .bbl pour voir la réponse PID Pitch."),
@@ -843,6 +844,9 @@ class MainWindow(QMainWindow):
         _replace('diagnostic', DiagnosticWidget(
             cfg, rp, size, flight_type=getattr(sa, 'flight_type', None), sa=sa,
             analyses=self._analyses, current_session_idx=idx
+        ))
+        _replace('expert', ExpertTab(
+            cfg, rp, sa, self._analyses, idx
         ))
         _replace('gyroscope',  GyroPlotWidget(df))
         for i, axis_name in enumerate(AXIS_NAMES):

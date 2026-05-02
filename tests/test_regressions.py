@@ -18,7 +18,13 @@ from analysis.analyzer import (  # noqa: E402
     _guess_cell_count,
 )
 from analysis.header_parser import FlightConfig  # noqa: E402
-from analysis.recommender import DiagnosticReport, Recommendation, Severity  # noqa: E402
+from analysis.recommender import (  # noqa: E402
+    DiagnosticReport,
+    MotorTemp,
+    Recommendation,
+    Severity,
+    generate_report,
+)
 
 
 class AnalyzerRegressionTests(unittest.TestCase):
@@ -104,6 +110,20 @@ class RecommenderRegressionTests(unittest.TestCase):
         from analysis.recommender import compute_health_score
 
         self.assertLess(compute_health_score(session), 100)
+
+    def test_hot_motors_block_i_increase(self):
+        cfg = FlightConfig(pid_p=[50, 50, 50], pid_i=[60, 60, 60],
+                           pid_d=[45, 45, 0], pid_f=[80, 80, 80])
+        aa = AxisAnalysis(axis=0, name="Roll", drift_score=0.9)
+        session = SessionAnalysis(axes=[aa], fly_duration_s=30, sample_rate_hz=1000)
+
+        report = generate_report(session, cfg, motor_temp=MotorTemp.HOT)
+
+        self.assertFalse(
+            any(r.param.startswith("i_") and r.suggested > r.current
+                for r in report.recommendations)
+        )
+        self.assertTrue(any("MOTEURS CHAUDS" in w for w in report.warnings))
 
 
 class HeaderRegressionTests(unittest.TestCase):

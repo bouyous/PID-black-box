@@ -1012,10 +1012,10 @@ def _apply_hot_motors_safety(report: 'DiagnosticReport', cfg: FlightConfig,
     for r in report.recommendations:
         is_increase = r.suggested > r.current
         param = r.param.lower()
-        # Tout ce qui touche P, D, F, dmax, master ne doit PAS monter.
+        # Tout ce qui touche P, I, D, F, dmax, master ne doit PAS monter.
         risky = is_increase and any(
             param.startswith(prefix) for prefix in
-            ('p_', 'd_', 'f_', 'dmax_', 'master')
+            ('p_', 'i_', 'd_', 'f_', 'dmax_', 'master')
         )
         if risky:
             removed_count += 1

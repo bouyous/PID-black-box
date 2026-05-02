@@ -84,19 +84,23 @@ class NavButton(QPushButton):
             QPushButton {{
                 background:{SIDEBAR_BG};
                 color:{SIDEBAR_TEXT};
-                border:none;
+                border:1px solid transparent;
                 border-left:3px solid transparent;
+                border-radius:7px;
+                margin:2px 6px;
                 {padding};
                 font-size:{font_size}px;
                 {align};
             }}
             QPushButton:hover {{
                 background:{SIDEBAR_HOVER};
+                border-color:#444;
                 border-left-color:{SIDEBAR_DIVIDER};
             }}
             QPushButton:checked {{
                 background:{SIDEBAR_ACTIVE};
                 color:#fff;
+                border-color:#3d3d3d;
                 border-left-color:{SIDEBAR_ACCENT};
                 font-weight:bold;
             }}
@@ -172,6 +176,9 @@ class RailSidebar(QFrame):
         ("📂", "Ouvrir un fichier",  "_open_action", "Ouvrir un .bbl ou .bfl depuis l'explorateur"),
         ("_divider", "", "_divider", ""),
         ("🩺", "Diagnostic",         "diagnostic",   "Analyse + recommandations PID/filtres"),
+        ("🧠", "Mode Expert",        "expert",       "Courbes step response, balance P/I/D et CLI dump"),
+        ("🎯", "Ressenti pilote",    "profile",      "Taille, style, batterie + ressenti pilote"),
+        ("_divider", "", "_divider", ""),
         ("📈", "Gyroscope",          "gyroscope",    "Courbes brutes du gyro 3 axes"),
         ("🎚", "PID Roll",           "pid_roll",     "Réponse PID sur l'axe roll"),
         ("🎚", "PID Pitch",          "pid_pitch",    "Réponse PID sur l'axe pitch"),
@@ -179,8 +186,6 @@ class RailSidebar(QFrame):
         ("🌀", "FFT",                "fft",          "Spectre fréquentiel — détection vibrations"),
         ("❋",  "Moteurs",            "motors",       "Commandes moteurs et eRPM (hélices)"),
         ("📊", "Comparaison",        "comparison",   "Avant / après — visible quand une référence est définie"),
-        ("_divider", "", "_divider", ""),
-        ("🎯", "Profil & Ressenti",  "profile",      "Taille, style, batterie + ressenti pilote"),
     ]
 
     def __init__(self):
