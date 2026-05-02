@@ -106,12 +106,19 @@ class FlightConfig:
     def size_hint(self) -> str:
         """Essaie de deviner la taille depuis le nom du craft/board."""
         s = (self.craft_name + self.board).lower()
-        for marker, size in [('10"', '10"'), ('10p', '10"'), ('7"', '7"'),
-                              ('7p', '7"'), ('6"', '6"'), ('6p', '6"'),
-                              ('5"', '5"'), ('5p', '5"'), ('3"', '3"'),
-                              ('3p', '3"'), ('2.5"', '2.5"'), ('2p5', '2.5"'),
-                              ('25p', '2.5"'), ('cinewhoop', '2.5"'),
-                              ('cinewoop', '2.5"')]:
+        for marker, size in [('10"', '10"'), ('10p', '10"'), ('10inch', '10"'),
+                              ('10in', '10"'), ('10pouce', '10"'),
+                              ('7"', '7"'), ('7p', '7"'), ('7inch', '7"'),
+                              ('7in', '7"'), ('7pouce', '7"'),
+                              ('6"', '6"'), ('6p', '6"'), ('6inch', '6"'),
+                              ('6in', '6"'), ('6pouce', '6"'),
+                              ('5"', '5"'), ('5p', '5"'), ('5inch', '5"'),
+                              ('5in', '5"'), ('5pouce', '5"'),
+                              ('3"', '3"'), ('3p', '3"'), ('3inch', '3"'),
+                              ('3in', '3"'), ('3pouce', '3"'),
+                              ('2.5"', '2.5"'), ('2p5', '2.5"'),
+                              ('2.5inch', '2.5"'), ('25p', '2.5"'),
+                              ('cinewhoop', '2.5"'), ('cinewoop', '2.5"')]:
             if marker in s:
                 return size
         return ''

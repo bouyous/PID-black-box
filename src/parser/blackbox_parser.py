@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 
 import pandas as pd
@@ -31,6 +32,41 @@ MIN_ROWS = 50  # sessions avec moins de points = vides/corrompues, ignorées
 _UNIT_RE = re.compile(r'\s*\([^)]+\)$')
 
 _PLATFORM = platform.system()   # 'Windows', 'Darwin' (Mac), 'Linux'
+
+
+def _writable_tmp_root() -> Path | None:
+    """Retourne un dossier temporaire réellement writable.
+
+    Certains Windows/antivirus bloquent `%TEMP%` pour les binaires lancés en
+    app packagée. On teste l'écriture et on replie vers un dossier applicatif.
+    """
+    candidates = [Path(tempfile.gettempdir())]
+    if sys.platform.startswith('win'):
+        candidates += [
+            Path(os.environ.get('LOCALAPPDATA', '')) / 'BlackBoxAnalyzer' / 'tmp',
+            Path('C:/tmp'),
+        ]
+    candidates.append(Path.cwd() / '.blackbox_tmp')
+
+    for root in candidates:
+        if not str(root):
+            continue
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+            probe = root / '.write_test'
+            probe.write_text('ok', encoding='ascii')
+            probe.unlink(missing_ok=True)
+            return root
+        except Exception:
+            continue
+    return None
+
+
+@contextmanager
+def _temporary_decode_dir():
+    root = _writable_tmp_root()
+    with tempfile.TemporaryDirectory(dir=str(root) if root else None) as tmpdir:
+        yield tmpdir
 
 
 def _strip_unit(name: str) -> str:
@@ -118,7 +154,7 @@ class BlackboxParser:
             except Exception:
                 pass  # xattr absent ou déjà propre
 
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with _temporary_decode_dir() as tmpdir:
             tmp_bbl = Path(tmpdir) / bbl_path.name
             shutil.copy2(bbl_path, tmp_bbl)
 
@@ -153,9 +189,7 @@ class BlackboxParser:
             # returncode != 0 n'est pas toujours fatal (sessions partiellement corrompues)
             # On lit ce qui a été généré quoi qu'il arrive
 
-            csv_files = sorted(Path(tmpdir).glob(f"{bbl_path.stem}.*.csv"))
-            if not csv_files:
-                csv_files = sorted(Path(tmpdir).glob(f"{bbl_path.stem}.csv"))
+            csv_files = sorted(Path(tmpdir).glob("*.csv"))
 
             sessions = [self._read_csv(f) for f in csv_files]
             sessions = [df for df in sessions if df is not None]

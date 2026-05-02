@@ -176,7 +176,8 @@ class DiagnosticReport:
             "# ============================================================",
             "",
         ]
-        changed = [r for r in self.recommendations if r.suggested != r.current]
+        changed = [r for r in _dedupe_recommendations(self.recommendations)
+                   if r.suggested != r.current]
         if changed:
             lines.append("# --- Réglages PID ---")
             for r in changed:
@@ -203,6 +204,32 @@ class DiagnosticReport:
                                 self.drone_size, self.flying_style,
                                 self.filter_recommendations,
                                 self.recommendations)
+
+
+def _dedupe_recommendations(recommendations: list[Recommendation]) -> list[Recommendation]:
+    """Garde une seule recommandation par paramètre, la plus significative."""
+    by_param: dict[str, Recommendation] = {}
+    for r in recommendations:
+        current = by_param.get(r.param)
+        if current is None:
+            by_param[r.param] = r
+            continue
+        cur_delta = abs(current.suggested - current.current)
+        new_delta = abs(r.suggested - r.current)
+        if new_delta > cur_delta:
+            by_param[r.param] = r
+        elif new_delta == cur_delta and _severity_rank(r.severity) > _severity_rank(current.severity):
+            by_param[r.param] = r
+    return list(by_param.values())
+
+
+def _severity_rank(sev: Severity) -> int:
+    return {
+        Severity.OK: 0,
+        Severity.INFO: 1,
+        Severity.WARNING: 2,
+        Severity.CRITICAL: 3,
+    }.get(sev, 0)
 
 
 # ---------------------------------------------------------------------------
@@ -398,9 +425,11 @@ def _apply_feel(style: dict, feel: FlightFeel) -> dict:
     # 2. Stabilité au vent : pousse I et resserre dérive
     d = feel.wind_stability - 3
     if d > 0:
-        s['drift_target']   = max(0.03, s['drift_target']   - d * 0.02)
-        s['drift_critical'] = max(0.06, s['drift_critical'] - d * 0.03)
+        s['drift_target']   = max(0.03, s['drift_target']   - d * 0.025)
+        s['drift_critical'] = max(0.06, s['drift_critical'] - d * 0.035)
+        s['d_min_ratio'] = max(0.25, min(1.0, s['d_min_ratio'] + d * 0.03))
         s['prefer_high_i']  = True
+        s['wind_authority'] = d
 
     # 3. Réactivité : resserre rise_target, tolère plus d'overshoot
     d = feel.responsiveness - 3
@@ -509,6 +538,9 @@ def compute_health_score(session: SessionAnalysis,
         # Punch wobble (rebond du nez sur les gaz)
         if aa.punch_wobble_score > 0.25:
             score -= min(10, aa.punch_wobble_score * 15)
+        # Rebond bas gaz apres figure : tres visible en freestyle/bangers
+        if aa.low_throttle_rebound_score > 0.20:
+            score -= min(12, aa.low_throttle_rebound_score * 18)
         # Oscillations
         if aa.oscillation_score > style['osc_target']:
             over = aa.oscillation_score - style['osc_target']
@@ -586,6 +618,11 @@ def generate_report(session: SessionAnalysis, cfg: FlightConfig,
             )
     if session.fly_duration_s > 0:
         report.summary.append(f"Durée de vol analysée : {session.fly_duration_s:.1f}s")
+    if session.low_throttle_maneuver_pct > 0.02:
+        report.summary.append(
+            f"Manœuvres bas gaz conservées dans l'analyse : "
+            f"{session.low_throttle_maneuver_pct * 100:.1f}% du vol."
+        )
     if session.sample_rate_hz > 0:
         report.summary.append(f"Échantillonnage : {session.sample_rate_hz:.0f}Hz")
     if cfg.board:
@@ -626,6 +663,7 @@ def generate_report(session: SessionAnalysis, cfg: FlightConfig,
     _check_cpu_and_bbl(cfg, report)
     _check_electrical(session, cfg, report, style)
     _enforce_signature(cfg, report, style, profile, feel or FlightFeel.neutral())
+    report.recommendations = _dedupe_recommendations(report.recommendations)
 
     # Motor imbalance
     imb = session.axes[0].motor_imbalance if session.axes else 0
@@ -702,6 +740,7 @@ def generate_report(session: SessionAnalysis, cfg: FlightConfig,
     worst_drift = max((aa.drift_score for aa in session.axes), default=0.0)
     worst_osc = max((aa.oscillation_score for aa in session.axes), default=0.0)
     worst_punch = max((aa.punch_wobble_score for aa in session.axes), default=0.0)
+    worst_low_thr = max((aa.low_throttle_rebound_score for aa in session.axes), default=0.0)
     truly_clean = (
         report.health_score >= 85
         and not has_pid_osc
@@ -709,6 +748,7 @@ def generate_report(session: SessionAnalysis, cfg: FlightConfig,
         and worst_drift < style['drift_target'] * 0.8
         and worst_osc < style['osc_target'] * 0.8
         and worst_punch < 0.25
+        and worst_low_thr < 0.20
     )
 
     if not report.recommendations and not report.filter_recommendations:
@@ -731,6 +771,8 @@ def generate_report(session: SessionAnalysis, cfg: FlightConfig,
                 details.append(f"drift score {worst_drift:.2f}")
             if worst_punch >= 0.25:
                 details.append(f"rebonds sur les gaz (punch wobble {worst_punch:.2f})")
+            if worst_low_thr >= 0.20:
+                details.append(f"rebond bas gaz après figure ({worst_low_thr:.2f})")
             msg = (f"Score {report.health_score}/100. "
                    f"Aucune correction PID automatique n'est suffisamment "
                    f"sûre, mais des défauts restent visibles : "
@@ -743,6 +785,7 @@ def generate_report(session: SessionAnalysis, cfg: FlightConfig,
                 "malgré l'absence de recommandation chiffrée."
             )
 
+    report.recommendations = _dedupe_recommendations(report.recommendations)
     return report
 
 
@@ -1315,6 +1358,33 @@ def _check_axis(aa: AxisAnalysis, cfg: FlightConfig, report: DiagnosticReport,
                             f"plus de D pour amortir les oscillations")
                 ))
 
+    # ===== 3b. Rebond bas gaz après flip/roll =====
+    if aa.low_throttle_rebound_score > 0.18 and ax < 2:
+        sev = (Severity.WARNING if aa.low_throttle_rebound_score > 0.35
+               else Severity.INFO)
+        target_dm = int(d_cur * max(style['d_min_ratio'], 0.70))
+        if d_cur > 0 and dm_cur > 0 and dm_cur < target_dm:
+            suggested_dm = min(d_cur, dm_cur + max(2, int((target_dm - dm_cur) * 0.75)))
+            if suggested_dm > dm_cur:
+                report.recommendations.append(Recommendation(
+                    param=f"d_min_{AXIS_PARAM[ax]}", current=dm_cur,
+                    suggested=suggested_dm, severity=sev, axis=ax,
+                    reason=(f"rebond bas gaz après figure "
+                            f"({aa.low_throttle_rebound_freq_hz:.0f}Hz, "
+                            f"score {aa.low_throttle_rebound_score:.2f}) — "
+                            f"D_min doit rester présent même gaz coupés")
+                ))
+        elif d_cur > 0 and aa.noise_ratio < style['noise_critical']:
+            d_new = _clamp_change(d_cur, +0.07, max_delta, d_range)
+            if d_new > d_cur:
+                report.recommendations.append(Recommendation(
+                    param=f"d_{AXIS_PARAM[ax]}", current=d_cur, suggested=d_new,
+                    severity=sev, axis=ax,
+                    reason=(f"rebond bas gaz après flip/roll "
+                            f"({aa.low_throttle_rebound_score:.2f}) — "
+                            f"plus de D pour amortir la récupération")
+                ))
+
     # ===== 4. Bruit D excessif (D trop haut OU filtres trop ouverts) =====
     if aa.d_noise_rms > 0 and d_cur > 0 and ax < 2:
         noise_ratio = aa.d_noise_rms / (aa.gyro_noise_rms + 1e-6)
@@ -1729,13 +1799,18 @@ def _check_betaflight_extras(session: SessionAnalysis, cfg: FlightConfig,
     # --- 1. iterm_relax_cutoff : si prop wash marqué et cutoff bas ---
     # Recommandation KB : passer de 15 à 20-25 pour récupérer plus vite après rotation.
     worst_pw = max((aa.propwash_score for aa in session.axes[:2]), default=0)
-    if (worst_pw > style['propwash_target'] * 1.2
+    worst_low_thr_rebound = max(
+        (aa.low_throttle_rebound_score for aa in session.axes[:2]), default=0
+    )
+    if ((worst_pw > style['propwash_target'] * 1.2
+         or worst_low_thr_rebound > 0.25)
             and cfg.iterm_relax_cutoff > 0 and cfg.iterm_relax_cutoff < 20):
         new_cut = 20 if flying_style != 'Racing' else 22
         report.filter_recommendations.append(
             f"set iterm_relax_cutoff = {new_cut}    "
-            f"# était {cfg.iterm_relax_cutoff} — prop wash score {worst_pw:.2f} > "
-            f"{style['propwash_target']:.2f} : I-term reprend plus vite en sortie de virage"
+            f"# était {cfg.iterm_relax_cutoff} — prop wash {worst_pw:.2f}, "
+            f"rebond bas gaz {worst_low_thr_rebound:.2f} : I-term reprend "
+            f"plus vite en sortie de figure"
         )
 
     # --- 2. FF sursauteur : proposer lissage AVANT de baisser FF ---
@@ -1813,6 +1888,21 @@ def _check_betaflight_extras(session: SessionAnalysis, cfg: FlightConfig,
                     f"# était {cfg.iterm_relax_cutoff} — punch wobble : "
                     f"I-term reprend plus vite après le punch"
                 )
+
+    low_thr_axes = [
+        aa for aa in session.axes[:2]
+        if aa.low_throttle_rebound_score > 0.25
+    ]
+    if low_thr_axes:
+        details = ", ".join(
+            f"{aa.name} {aa.low_throttle_rebound_score:.2f}"
+            for aa in low_thr_axes
+        )
+        report.warnings.append(
+            f"Rebond après figure gaz coupés détecté ({details}). "
+            f"Ce n'est pas une zone à ignorer : vérifier D_min/D, "
+            f"iterm_relax_cutoff et hélices avant de conclure."
+        )
 
     # --- 5. Warnings hardware (tirés de la KB) ---
     # Bruit HF persistant → évoquer grommets / BEC / condensateur
@@ -1920,11 +2010,11 @@ def _enforce_signature(cfg: FlightConfig, report: DiagnosticReport,
     i_low_bias = profile.get('i_bias') == 'low'  # 7" / 10"
     if i_high or wind_d != 0 or i_low_bias:
         i_mult = 1.12 if i_high else 1.0
-        i_mult *= 1 + wind_d * 0.05
+        i_mult *= 1 + wind_d * 0.08
         if i_low_bias:
             # Gros drones : on tire légèrement vers le bas (−8 %),
             # retour pilote : trop d'I → vibrations persistantes
-            i_mult *= 0.92
+            i_mult *= 0.96 if wind_d > 0 else 0.92
         for ax in (0, 1):
             i = cfg.pid_i[ax]
             if i <= 0:

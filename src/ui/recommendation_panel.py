@@ -1269,6 +1269,271 @@ class CheckOKTab(QWidget):
 
 
 # ---------------------------------------------------------------------------
+# Onglet Balance PID - lecture visuelle P / I / D / FF
+# ---------------------------------------------------------------------------
+
+def _ratio_bar(value: float, target_min: float, target_max: float) -> QFrame:
+    frame = QFrame()
+    frame.setFixedHeight(18)
+    clamped = max(0.0, min(float(value), 1.4))
+    pct = int((clamped / 1.4) * 100)
+    ok = target_min <= value <= target_max
+    color = '#27ae60' if ok else '#f39c12'
+    frame.setStyleSheet(f"""
+        QFrame {{
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                stop:0 {color}, stop:{pct / 100:.3f} {color},
+                stop:{pct / 100:.3f} #252525, stop:1 #252525);
+            border: 1px solid #444;
+            border-radius: 3px;
+        }}
+    """)
+    return frame
+
+
+class PidBalanceTab(QWidget):
+    """Affiche l'equilibre reel des termes PID mesures dans la blackbox."""
+
+    def __init__(self, sa: SessionAnalysis | None):
+        super().__init__()
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+
+        inner = QWidget()
+        layout = QVBoxLayout(inner)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+
+        layout.addWidget(_label(
+            "Lecture P / I / D / FF",
+            bold=True, color='#e0e0e0', size=14
+        ))
+        layout.addWidget(_label(
+            "Le ratio D/P aide a lire le compromis amortissement vs rebond. "
+            "Trop bas: rebond et propwash. Trop haut: moteurs chauds, bruit D et sensation freinee.",
+            color='#aaa', size=10
+        ))
+
+        if sa is None or not sa.axes:
+            layout.addWidget(GenericCard(
+                "Donnees PID indisponibles",
+                "La blackbox ne contient pas assez de donnees PID pour afficher la balance.",
+                Severity.WARNING,
+            ))
+        else:
+            for aa in sa.axes[:3]:
+                pb = aa.pid_balance
+                title = f"{AXIS_NAME[aa.axis]} - D/P {pb.d_to_p_ratio:.2f}"
+                detail = (
+                    f"P rms {pb.p_rms:.1f} | I rms {pb.i_rms:.1f} | "
+                    f"D rms {pb.d_rms:.1f} | FF rms {pb.f_rms:.1f}\n"
+                    f"I/P {pb.i_to_p_ratio:.2f} | FF/P {pb.f_to_p_ratio:.2f}\n"
+                    f"{pb.verdict}: {pb.detail}"
+                )
+                sev = Severity.OK if pb.verdict == "OK" else Severity.WARNING
+                card = GenericCard(title, detail, sev)
+                cl = card.layout()
+                if cl is not None:
+                    cl.addWidget(_ratio_bar(pb.d_to_p_ratio, 0.45, 0.70))
+                    cl.addWidget(_label(
+                        "Zone verte indicative: D/P 0.45 a 0.70 sur roll/pitch. "
+                        "Yaw n'a pas le meme role D.",
+                        color='#777', size=9
+                    ))
+                layout.addWidget(card)
+
+        layout.addStretch()
+        scroll.setWidget(inner)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(scroll)
+
+
+# ---------------------------------------------------------------------------
+# Onglet Latence - compromis reactivite / stabilite
+# ---------------------------------------------------------------------------
+
+def _latency_target(drone_size: str, style: str) -> tuple[float, float, float, float, str]:
+    size = (drone_size or '').lower()
+    style_l = (style or '').lower()
+    targets = {
+        '2.5': (8, 22, 28, 75),
+        '3': (6, 18, 22, 55),
+        '5': (2, 10, 18, 35),
+        '6': (5, 16, 28, 55),
+        '7': (8, 28, 45, 95),
+        '10': (12, 40, 65, 130),
+    }
+    lag_min, lag_max, rise_min, rise_max = targets.get('5')
+    intent = "Freestyle/race: minimiser la latence sans creer de rebond."
+    for key, value in targets.items():
+        if key in size:
+            lag_min, lag_max, rise_min, rise_max = value
+            break
+
+    stability_words = ("long", "range", "cine", "smooth", "wind", "vent", "autonomie", "7", "10")
+    if any(w in style_l or w in size for w in stability_words):
+        lag_max *= 1.25
+        rise_max *= 1.20
+        intent = "Long range / gros chassis: accepter plus de latence pour lisser et tenir le vent."
+    if "race" in style_l:
+        lag_max *= 0.70
+        rise_max *= 0.75
+        intent = "Race: viser une reponse tres directe, avec peu de filtre et beaucoup de precision."
+    if "bando" in style_l or "freestyle" in style_l:
+        rise_max *= 1.10
+        intent = "Freestyle: garder une reponse vive, mais assez amortie pour les flips et reprises bas gaz."
+
+    return lag_min, lag_max, rise_min, rise_max, intent
+
+
+def _filter_latency_text(cfg: FlightConfig, lag_max: float) -> tuple[str, Severity]:
+    gyro = max(cfg.gyro_lpf1_hz, cfg.gyro_lpf2_hz)
+    dterm = max(cfg.dterm_lpf1_hz, cfg.dterm_lpf2_hz, cfg.dterm_lpf1_dyn_max_hz)
+    if gyro <= 0 and dterm <= 0:
+        return ("Filtres non detectes dans le header.", Severity.INFO)
+    if lag_max <= 12 and (gyro < 150 or dterm < 100):
+        return ("Filtres probablement conservateurs pour un 5 pouces nerveux: latence possible.", Severity.WARNING)
+    if lag_max >= 30 and (gyro > 250 or dterm > 160):
+        return ("Filtres tres ouverts pour un gros chassis: attention au bruit et aux moteurs chauds.", Severity.WARNING)
+    return ("Compromis filtre/latence coherent avec le profil choisi.", Severity.OK)
+
+
+class LatencyTab(QWidget):
+    def __init__(self, report: DiagnosticReport, sa: SessionAnalysis | None,
+                 cfg: FlightConfig):
+        super().__init__()
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+
+        inner = QWidget()
+        layout = QVBoxLayout(inner)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+
+        lag_min, lag_max, rise_min, rise_max, intent = _latency_target(
+            report.drone_size, report.flying_style
+        )
+        layout.addWidget(_label("Latence et compromis de vol", bold=True, color='#e0e0e0', size=14))
+        layout.addWidget(_label(intent, color='#aaa', size=10))
+        layout.addWidget(GenericCard(
+            "Cible indicative",
+            f"Lag gyro/setpoint: {lag_min:.0f}-{lag_max:.0f} ms | "
+            f"Rise time: {rise_min:.0f}-{rise_max:.0f} ms",
+            Severity.INFO,
+        ))
+
+        if sa is None or not sa.axes:
+            layout.addWidget(GenericCard(
+                "Mesure indisponible",
+                "Importez une blackbox avec setpoint et gyro pour mesurer la latence.",
+                Severity.WARNING,
+            ))
+        else:
+            for aa in sa.axes[:2]:
+                lag = aa.tracking_lag_ms
+                rise = aa.avg_rise_time_ms
+                bad_lag = lag > lag_max or (lag > 0 and lag < lag_min)
+                bad_rise = rise > rise_max or (rise > 0 and rise < rise_min)
+                sev = Severity.WARNING if bad_lag or bad_rise else Severity.OK
+                if lag > lag_max or rise > rise_max:
+                    verdict = "Reponse lente: plus stable, mais moins directe."
+                elif (lag > 0 and lag < lag_min) or (rise > 0 and rise < rise_min):
+                    verdict = "Reponse tres vive: bonne race/freestyle, moins douce dans le vent."
+                else:
+                    verdict = "Latence dans la cible du profil."
+                layout.addWidget(GenericCard(
+                    AXIS_NAME[aa.axis],
+                    f"Lag {lag:.1f} ms | Rise {rise:.1f} ms | "
+                    f"Overshoot {aa.avg_overshoot_pct:.1f}%\n{verdict}",
+                    sev,
+                ))
+
+        txt, sev = _filter_latency_text(cfg, lag_max)
+        layout.addWidget(GenericCard(
+            "Filtres et sensation",
+            txt,
+            sev,
+        ))
+        layout.addWidget(_label(
+            "A lire avec le ressenti pilote: augmenter le filtrage ou baisser FF/P rend plus lisse, "
+            "mais peut cacher les rebonds. Ouvrir les filtres et monter FF rend plus direct, mais expose le bruit.",
+            color='#888', size=10
+        ))
+
+        layout.addStretch()
+        scroll.setWidget(inner)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(scroll)
+
+
+# ---------------------------------------------------------------------------
+# Onglet Plan de vol - procedure blackbox reproductible
+# ---------------------------------------------------------------------------
+
+def _flight_plan_steps(report: DiagnosticReport) -> list[tuple[str, str, Severity]]:
+    profile = f"{report.drone_size} / {report.flying_style}".strip()
+    return [
+        (
+            "Log 1 - Structure et filtres",
+            "2 a 3 minutes dans un endroit calme, si possible sans vent. "
+            "Vol propre: lignes droites, virages doux, peu de grosses commandes. "
+            "But: isoler resonances frame, moteurs, helices, RPM filter et bruit gyro.",
+            Severity.INFO,
+        ),
+        (
+            "Log 2 - Rampes de gaz",
+            "Partir bas gaz, monter progressivement jusqu'au plein gaz, redescendre progressivement. "
+            "Repeter 1 a 3 fois. But: voir sag, TPA, punch wobble, bruit D et vibrations selon throttle.",
+            Severity.INFO,
+        ),
+        (
+            "Log 3 - Ressenti pilote",
+            "Freestyle controle: rolls, flips, yaw, reprises bas gaz, puis quelques mouvements combines. "
+            "But: lire latence, FF, rebonds fin de figure, propwash et tenue au vent.",
+            Severity.INFO,
+        ),
+        (
+            f"Compromis du profil {profile}",
+            "5 pouces: reactivite et faible latence. 7/10 pouces: plus de douceur, moins de corrections inutiles, "
+            "meilleure tenue au vent et autonomie, sans rendre le drone mou.",
+            Severity.OK,
+        ),
+    ]
+
+
+class FlightPlanTab(QWidget):
+    def __init__(self, report: DiagnosticReport):
+        super().__init__()
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+
+        inner = QWidget()
+        layout = QVBoxLayout(inner)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+        layout.addWidget(_label("Marche a suivre Blackbox", bold=True, color='#e0e0e0', size=14))
+        layout.addWidget(_label(
+            "Trois logs courts valent mieux qu'un seul vol confus: structure, gaz, puis pilotage reel.",
+            color='#aaa', size=10
+        ))
+        for title, detail, severity in _flight_plan_steps(report):
+            layout.addWidget(GenericCard(title, detail, severity))
+        layout.addStretch()
+        scroll.setWidget(inner)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(scroll)
+
+
+# ---------------------------------------------------------------------------
 # Widget principal de diagnostic (regroupe les 4 onglets)
 # ---------------------------------------------------------------------------
 
@@ -1284,14 +1549,17 @@ class DiagnosticWidget(QWidget):
         tabs = QTabWidget()
         tabs.addTab(ContextTab(cfg, drone_size, flight_type), "📋  Contexte")
         tabs.addTab(RecommendationsTab(report),          "🔍  Diagnostic")
+        tabs.addTab(PidBalanceTab(sa),                   "P/I/D")
+        tabs.addTab(LatencyTab(report, sa, cfg),          "Latence")
         tabs.addTab(SymptomTab(report),                  "🩺  Symptômes")
         tabs.addTab(CheckOKTab(report, sa, cfg),         "✅  Check OK")
+        tabs.addTab(FlightPlanTab(report),                "Plan de vol")
         tabs.addTab(CliDumpTab(report),                  "💻  CLI Dump")
 
         # Aller directement au diagnostic s'il y a des problèmes
         if report.has_issues():
             tabs.setCurrentIndex(1)
         elif report.matched_symptoms:
-            tabs.setCurrentIndex(2)
+            tabs.setCurrentIndex(4)
 
         layout.addWidget(tabs)

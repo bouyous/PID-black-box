@@ -29,6 +29,7 @@ PROPWASH_BAND = (15, 80)
 
 # Seuil throttle stick (échelle 1000-2000µs)
 THROTTLE_FLY_MIN = 1100
+THROTTLE_LOW_CUT = 1150
 MOTOR_FLY_RATIO  = 0.15
 MIN_FLY_SECONDS  = 2.0
 
@@ -40,6 +41,20 @@ class VibrationPeak:
     covered_by_rpm_filter: bool
     harmonic: int = 0
     label: str = ""
+
+
+@dataclass
+class PidBalanceMetrics:
+    p_rms: float = 0.0
+    i_rms: float = 0.0
+    d_rms: float = 0.0
+    f_rms: float = 0.0
+    d_to_p_ratio: float = 0.0
+    i_to_p_ratio: float = 0.0
+    f_to_p_ratio: float = 0.0
+    sample_count: int = 0
+    verdict: str = "Indisponible"
+    detail: str = "Traces PID absentes ou trop courtes."
 
 
 @dataclass
@@ -77,6 +92,8 @@ class AxisAnalysis:
 
     # Prop wash (oscillation amortie après input)
     propwash_score: float = 0.0      # 0-1
+    low_throttle_rebound_score: float = 0.0  # 0-1
+    low_throttle_rebound_freq_hz: float = 0.0
 
     # Vibrations mécaniques
     vibration_peaks: list[VibrationPeak] = field(default_factory=list)
@@ -88,6 +105,7 @@ class AxisAnalysis:
     avg_overshoot_pct: float = 0.0
     avg_error_rms: float = 0.0
     tracking_lag_ms: float = 0.0     # retard gyro vs setpoint (indique FF bas)
+    pid_balance: PidBalanceMetrics = field(default_factory=PidBalanceMetrics)
 
     # Équilibre moteurs
     motor_imbalance: float = 0.0
@@ -127,6 +145,7 @@ class SessionAnalysis:
     avg_motor_hz: float = 0.0
     throttle_avg: float = 0.0        # moyenne de la manette en vol (0-1)
     throttle_p2p: float = 0.0        # variation crête-crête (jerk)
+    low_throttle_maneuver_pct: float = 0.0
     warnings: list[str] = field(default_factory=list)
     flight_type: FlightTypeResult | None = None
 
@@ -145,7 +164,9 @@ def analyze(df: pd.DataFrame, cfg: FlightConfig) -> SessionAnalysis:
         if len(vbat):
             result.battery_voltage = float(vbat.mean())
             result.battery_voltage_min = float(vbat.min())
-            result.cell_count = _guess_cell_count(result.battery_voltage)
+            result.cell_count = _guess_cell_count(
+                result.battery_voltage, float(vbat.max())
+            )
             if result.cell_count > 0:
                 result.battery_sag_v_per_cell = (
                     float(vbat.max() - vbat.min()) / result.cell_count
@@ -167,6 +188,7 @@ def analyze(df: pd.DataFrame, cfg: FlightConfig) -> SessionAnalysis:
             norm = np.clip((thr - 1000) / 1000.0, 0, 1)
             result.throttle_avg = float(np.mean(norm))
             result.throttle_p2p = float(np.percentile(norm, 95) - np.percentile(norm, 5))
+            result.low_throttle_maneuver_pct = _low_throttle_maneuver_pct(df, fly_mask)
 
     for axis in range(3):
         result.axes.append(_analyze_axis(df, cfg, axis, fly_mask, result.sample_rate_hz))
@@ -174,7 +196,7 @@ def analyze(df: pd.DataFrame, cfg: FlightConfig) -> SessionAnalysis:
     result.avg_erpm = _avg_erpm(df, fly_mask)
     if result.avg_erpm:
         valid = [r for r in result.avg_erpm if r > 500]
-        result.avg_motor_hz = float(np.mean(valid)) / 60.0 if valid else 0.0
+        result.avg_motor_hz = _erpm_to_motor_hz(float(np.mean(valid)), cfg) if valid else 0.0
 
     for aa in result.axes:
         _detect_vibrations(aa, df, cfg, fly_mask, result.sample_rate_hz,
@@ -321,14 +343,90 @@ def _analyze_axis(df: pd.DataFrame, cfg: FlightConfig, axis: int,
         _detect_drift(aa, gyro, sp, fly_mask, fs)
         _detect_pid_oscillation(aa, gyro, sp, fly_mask, fs)
         _detect_propwash(aa, gyro, sp, fly_mask, fs)
+        _detect_low_throttle_rebound(aa, df, gyro, sp, fly_mask, fs)
         _detect_punch_wobble(aa, df, gyro, fly_mask, fs)
 
+    _fill_pid_balance(aa, df, fly_mask)
+
     return aa
+
+
+def _fill_pid_balance(aa: AxisAnalysis, df: pd.DataFrame, fly_mask: np.ndarray):
+    p_col = f'axisP[{aa.axis}]'
+    i_col = f'axisI[{aa.axis}]'
+    d_col = f'axisD[{aa.axis}]'
+    f_col = f'axisF[{aa.axis}]'
+    if p_col not in df.columns or not fly_mask.any():
+        return
+
+    active = fly_mask.copy()
+    sp_col = f'setpoint[{aa.axis}]'
+    gyro_col = f'gyroADC[{aa.axis}]'
+    if sp_col in df.columns:
+        active &= np.abs(df[sp_col].to_numpy(dtype=np.float64)) > 60
+    elif gyro_col in df.columns:
+        active &= np.abs(df[gyro_col].to_numpy(dtype=np.float64)) > 60
+
+    if active.sum() < 128:
+        active = fly_mask
+    if active.sum() < 128:
+        return
+
+    def rms(col: str) -> float:
+        if col not in df.columns:
+            return 0.0
+        vals = df[col].to_numpy(dtype=np.float64)[active]
+        vals = vals[np.isfinite(vals)]
+        if len(vals) == 0:
+            return 0.0
+        return float(np.sqrt(np.mean(vals * vals)))
+
+    p = rms(p_col)
+    i = rms(i_col)
+    d = rms(d_col)
+    f = rms(f_col)
+    ratio_dp = d / max(p, 1e-6)
+    ratio_ip = i / max(p, 1e-6)
+    ratio_fp = f / max(p, 1e-6)
+
+    verdict = "OK"
+    detail = "D/P dans une zone lisible, à confirmer avec rebonds et température moteur."
+    if d > 0:
+        if ratio_dp < 0.30:
+            verdict = "D faible vs P"
+            detail = "D amortit peu les arrêts : surveiller bounceback et propwash."
+        elif ratio_dp < 0.45:
+            verdict = "D un peu bas"
+            detail = "Réponse vive, mais marge limitée sur les rebonds en sortie de figure."
+        elif ratio_dp > 0.90:
+            verdict = "D très haut vs P"
+            detail = "Drone potentiellement mou, moteurs plus chauds, latence ressentie."
+        elif ratio_dp > 0.70:
+            verdict = "D haut"
+            detail = "Bon amortissement possible, mais vérifier chaleur moteur et bruit D."
+    elif aa.axis < 2:
+        verdict = "D absent"
+        detail = "Aucun amortissement D mesurable sur roll/pitch."
+
+    aa.pid_balance = PidBalanceMetrics(
+        p_rms=p,
+        i_rms=i,
+        d_rms=d,
+        f_rms=f,
+        d_to_p_ratio=float(ratio_dp if p > 0 else 0.0),
+        i_to_p_ratio=float(ratio_ip if p > 0 else 0.0),
+        f_to_p_ratio=float(ratio_fp if p > 0 else 0.0),
+        sample_count=int(active.sum()),
+        verdict=verdict,
+        detail=detail,
+    )
 
 
 def _fill_step_response(aa: AxisAnalysis, t: np.ndarray, gyro: np.ndarray,
                         sp: np.ndarray, fly_mask: np.ndarray, fs: float):
     dsp = np.abs(np.diff(sp, prepend=sp[0]))
+    if not fly_mask.any():
+        return
     threshold = max(50.0, np.percentile(dsp[fly_mask], 95) * 0.3)
     step_starts = np.where((dsp > threshold) & fly_mask)[0]
 
@@ -347,9 +445,20 @@ def _fill_step_response(aa: AxisAnalysis, t: np.ndarray, gyro: np.ndarray,
         end = min(idx + win, len(gyro) - 1)
         if end - idx < int(fs * 0.05):
             continue
-        sp_target = sp[end]
-        sp_start  = sp[idx]
-        delta     = sp_target - sp_start
+        pre_start = max(0, idx - int(fs * 0.03))
+        sp_start = float(np.median(sp[pre_start:idx + 1]))
+
+        post_start = min(idx + max(1, int(fs * 0.035)), len(sp) - 1)
+        post_end = min(idx + max(2, int(fs * 0.14)), end)
+        if post_end - post_start < int(fs * 0.03):
+            continue
+        post_sp = sp[post_start:post_end]
+        if len(post_sp) < 3:
+            continue
+        sp_target = float(np.median(post_sp))
+        if np.std(post_sp) > max(40.0, abs(sp_target - sp_start) * 0.45):
+            continue
+        delta = sp_target - sp_start
         if abs(delta) < 30:
             continue
 
@@ -626,6 +735,59 @@ def _detect_propwash(aa: AxisAnalysis, gyro: np.ndarray, sp: np.ndarray,
     aa.propwash_score = float(min(1.0, propwash_p / total_power * 2.5))
 
 
+def _detect_low_throttle_rebound(aa: AxisAnalysis, df: pd.DataFrame,
+                                 gyro: np.ndarray, sp: np.ndarray,
+                                 fly_mask: np.ndarray, fs: float):
+    """Détecte les rebonds après flips/rolls gaz coupés.
+
+    En freestyle/bangers, le throttle peut être bas pendant la figure, puis le
+    rebond apparaît à la récupération. Cette signature doit rester visible.
+    """
+    if 'rcCommand[3]' not in df.columns or fs < 100:
+        return
+
+    thr = df['rcCommand[3]'].to_numpy(dtype=np.float64)
+    abs_sp = np.abs(sp)
+    active_flip = (abs_sp > 260) & (thr < THROTTLE_LOW_CUT) & fly_mask
+    runs = _find_runs(active_flip, min_len=max(2, int(fs * 0.05)))
+    if not runs:
+        return
+
+    clips = []
+    max_devs = []
+    for _start, end in runs:
+        a = min(end + int(fs * 0.04), len(gyro) - 1)
+        b = min(end + int(fs * 0.42), len(gyro))
+        if b - a < int(fs * 0.12):
+            continue
+        seg = gyro[a:b]
+        clips.append(seg - np.mean(seg))
+        max_devs.append(float(np.max(np.abs(seg - seg[0]))))
+
+    if not clips:
+        return
+    sig = np.concatenate(clips)
+    if len(sig) < 128:
+        return
+
+    freqs, psd = _welch_psd(sig, fs, nperseg=512)
+    if len(freqs) == 0:
+        return
+    band = (freqs >= 8) & (freqs <= 80)
+    if not band.any():
+        return
+
+    band_power = psd[band]
+    band_freqs = freqs[band]
+    peak_idx = int(np.argmax(band_power))
+    total_power = float(np.sum(psd)) + 1e-9
+    spectral = float(np.sum(band_power)) / total_power
+    amp = float(np.mean(max_devs)) if max_devs else 0.0
+    amp_score = max(0.0, min(1.0, (amp - 35.0) / 120.0))
+    aa.low_throttle_rebound_score = float(min(1.0, spectral * 2.2 + amp_score * 0.7))
+    aa.low_throttle_rebound_freq_hz = float(band_freqs[peak_idx])
+
+
 def _find_runs(mask: np.ndarray, min_len: int) -> list[tuple[int, int]]:
     """Retourne les (start, end) des runs de True >= min_len."""
     if not mask.any():
@@ -661,49 +823,96 @@ def _welch_psd(signal: np.ndarray, fs: float,
 
 
 def _fly_mask(df: pd.DataFrame) -> np.ndarray:
-    """Sections "en vol" — étend le critère throttle > 1100 pour ne PAS
-    exclure les flips/rolls où le pilote coupe les gaz pendant la rotation
-    (typique freestyle : pitch flip avant = throttle coupé en chute libre).
+    """Sections en vol, y compris les figures gaz coupés.
 
-    Critère "en vol" = au moins UN de :
-      - throttle > THROTTLE_FLY_MIN (vol normal)
-      - rotation gyro active (|gyro| > 100 °/s sur un axe = manœuvre)
-      - commande pilote active (|setpoint| > 80 °/s = stick poussé)
+    Un flip à bas gaz est encore du vol réel. On combine moteur, throttle,
+    setpoint et gyro, puis on garde un peu de contexte avant/après manoeuvre
+    pour ne pas perdre les rebonds de récupération.
     """
     n = len(df)
-    base = np.zeros(n, dtype=bool)
+    if n == 0:
+        return np.zeros(0, dtype=bool)
+    fs = _infer_sample_rate(df)
+
+    throttle_active = np.zeros(n, dtype=bool)
+    motor_active = np.zeros(n, dtype=bool)
+    gyro_active = np.zeros(n, dtype=bool)
+    stick_active = np.zeros(n, dtype=bool)
 
     if 'rcCommand[3]' in df.columns:
         thr = df['rcCommand[3]'].to_numpy(dtype=np.float64)
-        base |= (thr > THROTTLE_FLY_MIN)
+        throttle_active = (thr > THROTTLE_FLY_MIN)
+
+    motor_cols = [f'motor[{i}]' for i in range(4) if f'motor[{i}]' in df.columns]
+    if motor_cols:
+        motors = np.vstack([df[c].to_numpy(dtype=np.float64) for c in motor_cols])
+        mean_motor = np.nanmean(motors, axis=0)
+        valid = mean_motor[np.isfinite(mean_motor) & (mean_motor > 0)]
+        if len(valid):
+            idle = float(np.percentile(valid, 5))
+            high = float(np.percentile(valid, 99))
+            threshold = idle + 0.06 * max(1.0, high - idle)
+            motor_active = mean_motor > threshold
 
     # Rotation active : flip / roll / rotation marquée
     for ax in range(3):
         col = f'gyroADC[{ax}]'
         if col in df.columns:
             g = df[col].to_numpy(dtype=np.float64)
-            base |= (np.abs(g) > 100.0)
+            gyro_active |= (np.abs(g) > 100.0)
 
     # Commande pilote active : stick clairement déplacé
     for ax in range(3):
         col = f'setpoint[{ax}]'
         if col in df.columns:
             sp = df[col].to_numpy(dtype=np.float64)
-            base |= (np.abs(sp) > 80.0)
+            stick_active |= (np.abs(sp) > 80.0)
 
+    maneuver = stick_active | gyro_active
+    powered_context = _dilate_mask(throttle_active | motor_active, int(fs * 0.8))
+    maneuver_context = _dilate_mask(maneuver, int(fs * 0.35))
+    base = throttle_active | motor_active | (maneuver & (powered_context | maneuver_context))
+    base = _dilate_mask(base, int(fs * 0.25))
     if base.sum() > 100:
         return base
 
-    # Fallback motor : ancien comportement si on n'a rien trouvé
-    if 'motor[0]' in df.columns:
-        vals = df['motor[0]'].to_numpy(dtype=np.float64)
-        valid = vals[vals > 0]
-        if len(valid):
-            idle  = float(np.percentile(valid, 2))
-            max_v = float(np.percentile(valid, 99))
-            threshold = idle + MOTOR_FLY_RATIO * (max_v - idle)
-            return vals > threshold
+    fallback = throttle_active | motor_active | maneuver
+    if fallback.sum() > 0:
+        return _dilate_mask(fallback, int(fs * 0.25))
     return np.ones(n, dtype=bool)
+
+
+def _infer_sample_rate(df: pd.DataFrame) -> float:
+    if len(df) > 1 and 'time_s' in df.columns:
+        dt = np.diff(df['time_s'].to_numpy(dtype=np.float64))
+        dt = dt[dt > 0]
+        if len(dt):
+            return max(1.0, float(1.0 / np.median(dt)))
+    return 1000.0
+
+
+def _dilate_mask(mask: np.ndarray, radius: int) -> np.ndarray:
+    if radius <= 0 or not mask.any():
+        return mask
+    radius = min(radius, max(1, (len(mask) - 1) // 2))
+    kernel = np.ones(radius * 2 + 1, dtype=int)
+    return np.convolve(mask.astype(int), kernel, mode='same') > 0
+
+
+def _low_throttle_maneuver_pct(df: pd.DataFrame, fly_mask: np.ndarray) -> float:
+    if 'rcCommand[3]' not in df.columns or not fly_mask.any():
+        return 0.0
+    thr = df['rcCommand[3]'].to_numpy(dtype=np.float64)
+    maneuver = np.zeros(len(df), dtype=bool)
+    for ax in range(3):
+        sp_col = f'setpoint[{ax}]'
+        gyro_col = f'gyroADC[{ax}]'
+        if sp_col in df.columns:
+            maneuver |= np.abs(df[sp_col].to_numpy(dtype=np.float64)) > 180
+        if gyro_col in df.columns:
+            maneuver |= np.abs(df[gyro_col].to_numpy(dtype=np.float64)) > 180
+    low_maneuver = (thr < THROTTLE_LOW_CUT) & maneuver & fly_mask
+    return float(np.mean(low_maneuver[fly_mask])) if fly_mask.any() else 0.0
 
 
 def _motor_imbalance(df: pd.DataFrame, fly_mask: np.ndarray) -> float:
@@ -717,7 +926,7 @@ def _motor_imbalance(df: pd.DataFrame, fly_mask: np.ndarray) -> float:
     return float(np.std(means)) if len(means) == 4 else 0.0
 
 
-def _guess_cell_count(vbat: float) -> int:
+def _guess_cell_count(vbat: float, vbat_max: float | None = None) -> int:
     """Choisit le nombre de cellules le plus plausible pour la tension moyenne
     observée en vol.
 
@@ -732,14 +941,17 @@ def _guess_cell_count(vbat: float) -> int:
     """
     if vbat <= 0:
         return 0
+    observed_max = vbat if vbat_max is None or vbat_max <= 0 else vbat_max
     candidates = []
-    # Plage 2.7-4.25 V/cell : couvre LiPo (3.0-4.25) ET Li-ion 6S courantes
-    # en FPV qui descendent jusqu'à ~2.7 V/cell sans dommage.
+    # Plage 2.55-4.25 V/cell : couvre LiPo et Li-ion. On refuse les hypothèses
+    # physiquement impossibles sur la tension max observée.
     for cells in (1, 2, 3, 4, 6, 8, 10, 12):
         v_per_cell = vbat / cells
-        if 2.7 <= v_per_cell <= 4.25:
-            # Score : distance à 3.7 V (nominal LiPo) — le plus proche gagne
-            score = abs(v_per_cell - 3.7)
+        max_per_cell = observed_max / cells
+        if 2.55 <= v_per_cell <= 4.25 and max_per_cell <= 4.28:
+            # Quand 4S plein et 6S Li-ion bas se recouvrent, préférer le pack
+            # le plus haut évite de sous-estimer dangereusement les alertes/cell.
+            score = abs(v_per_cell - 3.65) - cells * 0.015
             candidates.append((score, cells))
     if candidates:
         candidates.sort()
@@ -760,6 +972,12 @@ def _avg_erpm(df: pd.DataFrame, fly_mask: np.ndarray) -> list[float]:
             active = v[v > 5]
             result.append(float(np.median(active)) * 100.0 if len(active) else 0.0)
     return result
+
+
+def _erpm_to_motor_hz(erpm: float, cfg: FlightConfig) -> float:
+    """Convertit eRPM reel en fréquence mécanique moteur."""
+    pole_pairs = max(1.0, float(cfg.motor_poles or 14) / 2.0)
+    return erpm / pole_pairs / 60.0
 
 
 def _detect_vibrations(aa: AxisAnalysis, df: pd.DataFrame, cfg: FlightConfig,
