@@ -53,7 +53,13 @@ from ui.drop_overlay import DropOverlay
 from ui.fft_widget import FftWidget
 from ui.motor_temp_bar import MotorTempBar
 from ui.plot_widget import GyroPlotWidget, MotorPlotWidget, PidPlotWidget
-from ui.recommendation_panel import DiagnosticWidget, ExpertTab
+from ui.recommendation_panel import (
+    CliDumpTab,
+    DiagnosticWidget,
+    PidBalanceTab,
+    SideNavStack,
+    StepResponseTab,
+)
 from ui.sidebar import RailSidebar
 
 
@@ -402,6 +408,41 @@ class WelcomeView(QWidget):
         btn_row.addStretch()
         layout.addLayout(btn_row)
 
+        plan = QFrame()
+        plan.setMaximumWidth(980)
+        plan.setStyleSheet("""
+            QFrame {
+                background:#20242a;
+                border:1px solid #3b536f;
+                border-radius:12px;
+            }
+        """)
+        plan_lay = QVBoxLayout(plan)
+        plan_lay.setContentsMargins(22, 18, 22, 18)
+        plan_lay.setSpacing(10)
+
+        plan_title = QLabel("Méthode Blackbox recommandée")
+        plan_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        plan_title.setStyleSheet("color:#ffffff; font-size:22px; font-weight:800;")
+        plan_lay.addWidget(plan_title)
+
+        plan_text = QLabel(
+            "<b>Objectif :</b> une seule blackbox peut suffire. On cherche juste à y retrouver "
+            "trois phases lisibles, même courtes.<br><br>"
+            "<b>1. Référence calme :</b> 20 à 40 secondes de vol très propre / stationnaire, "
+            "si possible sans vent. Elle sert surtout à lire le bruit de base, les résonances, "
+            "les hélices, les moteurs et les filtres.<br><br>"
+            "<b>2. Rampes de gaz :</b> 15 à 30 secondes. Monter progressivement bas gaz → plein gaz, "
+            "puis redescendre. Cela donne des données sur plusieurs régimes moteur et aide à lire "
+            "les harmoniques, le sag, le TPA et le bruit selon le throttle.<br><br>"
+            "<b>3. Vol réel :</b> freestyle propre : rolls, flips, yaw, reprises bas gaz et mouvements "
+            "séparés par axe. Cette phase est indispensable pour PID, FeedForward, latence et rebonds."
+        )
+        plan_text.setWordWrap(True)
+        plan_text.setStyleSheet("color:#d7e6f7; font-size:14px; line-height:1.45;")
+        plan_lay.addWidget(plan_text)
+        layout.addWidget(plan)
+
         # Tip
         tip = QLabel(
             "💡  Compatible Betaflight 4.5+   ·   Multi-plateformes   ·   "
@@ -410,6 +451,30 @@ class WelcomeView(QWidget):
         tip.setAlignment(Qt.AlignmentFlag.AlignCenter)
         tip.setStyleSheet("color:#555; font-size:11px; padding-top:24px;")
         layout.addWidget(tip)
+
+
+# --------------------------------------------------------------------------
+# Mode Expert : toutes les courbes et les détails techniques
+# --------------------------------------------------------------------------
+
+class ExpertWorkbench(QWidget):
+    def __init__(self, df: pd.DataFrame, cfg: FlightConfig, report: DiagnosticReport,
+                 sa: SessionAnalysis, analyses: list[SessionAnalysis],
+                 current_session_idx: int):
+        super().__init__()
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(SideNavStack("Mode Expert", [
+            ("📈", "Step response", StepResponseTab(cfg, analyses, current_session_idx)),
+            ("📡", "Vibrations", FftWidget(df, cfg)),
+            ("↔", "PID Roll", PidPlotWidget(df, 0, "Roll")),
+            ("↕", "PID Pitch", PidPlotWidget(df, 1, "Pitch")),
+            ("⟳", "PID Yaw", PidPlotWidget(df, 2, "Yaw")),
+            ("📉", "Gyroscope", GyroPlotWidget(df)),
+            ("⚙", "Moteurs", MotorPlotWidget(df)),
+            ("⚖", "Balance P/I/D", PidBalanceTab(sa)),
+            ("💻", "CLI Dump", CliDumpTab(report)),
+        ]))
 
 
 # --------------------------------------------------------------------------
@@ -635,7 +700,7 @@ class MainWindow(QMainWindow):
             ('pid_roll',   "Glissez un .bbl pour voir la réponse PID Roll."),
             ('pid_pitch',  "Glissez un .bbl pour voir la réponse PID Pitch."),
             ('pid_yaw',    "Glissez un .bbl pour voir la réponse PID Yaw."),
-            ('fft',        "Glissez un .bbl pour voir le spectre FFT."),
+            ('fft',        "Glissez un .bbl pour voir l'analyse des vibrations."),
             ('motors',     "Glissez un .bbl pour voir les courbes moteurs."),
             ('comparison', "Définissez une référence puis chargez un nouveau vol."),
         ]:
@@ -845,9 +910,7 @@ class MainWindow(QMainWindow):
             cfg, rp, size, flight_type=getattr(sa, 'flight_type', None), sa=sa,
             analyses=self._analyses, current_session_idx=idx
         ))
-        _replace('expert', ExpertTab(
-            cfg, rp, sa, self._analyses, idx
-        ))
+        _replace('expert', ExpertWorkbench(df, cfg, rp, sa, self._analyses, idx))
         _replace('gyroscope',  GyroPlotWidget(df))
         for i, axis_name in enumerate(AXIS_NAMES):
             view_id = f'pid_{axis_name.lower()}'

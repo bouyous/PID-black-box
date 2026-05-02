@@ -1,5 +1,5 @@
 """
-Widget FFT : spectre de puissance (PSD) du gyroscope.
+Widget Vibrations : analyse fréquentielle du gyroscope.
 - Gyro filtré vs brut sur le même graphe
 - Lignes verticales : LPF gyro, LPF D-term, harmoniques RPM filter
 - Echelle log Y (dB)
@@ -53,6 +53,11 @@ def _db(power: np.ndarray) -> np.ndarray:
     return 10.0 * np.log10(np.clip(power, 1e-12, None))
 
 
+def _erpm_to_motor_hz(erpm: float, cfg: FlightConfig) -> float:
+    poles = max(int(getattr(cfg, 'motor_poles', 14) or 14), 2)
+    return float(erpm) / 60.0 / max(poles / 2.0, 1.0)
+
+
 def _estimate_fs(df: pd.DataFrame) -> float:
     if 'time_s' not in df.columns or len(df) < 2:
         return 2000.0
@@ -100,8 +105,8 @@ class FftWidget(QWidget):
         self.avg_erpm = _avg_erpm(df, self.fly)
 
         tabs = QTabWidget()
-        tabs.addTab(self._build_spectrum_tab(), "Spectre (PSD)")
-        tabs.addTab(self._build_spectrogram_tab(), "Spectrogramme Roll")
+        tabs.addTab(self._build_spectrum_tab(), "Vibrations")
+        tabs.addTab(self._build_spectrogram_tab(), "Carte temps/fréquences")
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -119,6 +124,9 @@ class FftWidget(QWidget):
 
         # Barre de cases
         bar = QHBoxLayout()
+        title = QLabel("Vibrations - fréquences, résonances et harmoniques moteur")
+        title.setStyleSheet("color:#e0e0e0; font-size:15px; font-weight:bold; padding:2px 8px;")
+        bar.addWidget(title)
         self._checks: dict[str, QCheckBox] = {}
         for label, color in [('Roll', ROLL_COLOR), ('Pitch', PITCH_COLOR), ('Yaw', YAW_COLOR)]:
             cb = QCheckBox(label)
@@ -180,6 +188,31 @@ class FftWidget(QWidget):
                 curve = self._psd_plot.plot(freqs[mask], db, pen=pen, name=key)
                 curve.setVisible(not is_raw or self._checks['Brut'].isChecked())
                 self._psd_curves[key] = curve
+                if not is_raw:
+                    self._draw_resonance_labels(freqs[mask], db, color, name)
+
+    def _draw_resonance_labels(self, freqs: np.ndarray, db: np.ndarray,
+                               color: str, axis_name: str):
+        band = (freqs >= 80) & (freqs <= 600)
+        if not band.any():
+            return
+        bf = freqs[band]
+        bd = db[band]
+        floor = float(np.percentile(bd, 65))
+        candidates = []
+        for i in range(2, len(bd) - 2):
+            if bd[i] <= floor + 6:
+                continue
+            if bd[i] >= bd[i - 1] and bd[i] >= bd[i + 1]:
+                candidates.append((float(bd[i]), float(bf[i])))
+        for _power, hz in sorted(candidates, reverse=True)[:3]:
+            line = pg.InfiniteLine(
+                pos=hz, angle=90,
+                pen=pg.mkPen(color, width=1, style=Qt.PenStyle.DotLine, alpha=90),
+                label=f'{axis_name} réso {hz:.0f}Hz',
+                labelOpts={'color': color, 'position': 0.18}
+            )
+            self._psd_plot.addItem(line)
 
     def _draw_filter_lines(self):
         cfg = self.cfg
@@ -209,7 +242,7 @@ class FftWidget(QWidget):
         if not rpms:
             return
         avg = float(np.mean(rpms))
-        fund_hz = avg / 60.0  # eRPM → Hz
+        fund_hz = _erpm_to_motor_hz(avg, self.cfg)
 
         for h in range(1, self.cfg.rpm_filter_harmonics + 1):
             hz = fund_hz * h
@@ -218,7 +251,7 @@ class FftWidget(QWidget):
             line = pg.InfiniteLine(
                 pos=hz, angle=90,
                 pen=pg.mkPen('#f39c12', width=1, style=Qt.PenStyle.DashLine, alpha=120),
-                label=f'RPM×{h}' if h <= 3 else '',
+                label=f'Moteur ×{h}' if h <= 4 else '',
                 labelOpts={'color': '#f39c12', 'position': 0.85 - h * 0.05}
             )
             self._psd_plot.addItem(line)
@@ -234,15 +267,15 @@ class FftWidget(QWidget):
             valid = [r for r in self.avg_erpm if r > 0]
             if valid:
                 avg_erpm = float(np.mean(valid))
-                fund_hz  = avg_erpm / 60.0
+                fund_hz  = _erpm_to_motor_hz(avg_erpm, self.cfg)
                 if fund_hz > MAX_FFT_HZ:
                     parts.append(
-                        f"Filtre RPM : fondamentale ~{fund_hz:.0f}Hz "
+                        f"Harmoniques moteur : fondamentale ~{fund_hz:.0f}Hz "
                         f"(hors fenêtre — pics 0-{MAX_FFT_HZ}Hz = résonances mécaniques)"
                     )
                 else:
                     parts.append(
-                        f"RPM filter ~{fund_hz:.0f}Hz fond. "
+                        f"Harmoniques moteur ~{fund_hz:.0f}Hz fond. "
                         f"({self.cfg.rpm_filter_harmonics} harmoniques)"
                     )
 
@@ -266,7 +299,7 @@ class FftWidget(QWidget):
                 )
 
     # ------------------------------------------------------------------
-    # Onglet Spectrogramme Roll
+    # Onglet Carte temps/fréquences Roll
     # ------------------------------------------------------------------
 
     def _build_spectrogram_tab(self) -> QWidget:
@@ -280,7 +313,7 @@ class FftWidget(QWidget):
             return widget
 
         layout.addWidget(QLabel(
-            "Spectrogramme Roll — évolution du bruit dans le temps. "
+            "Carte temps/fréquences Roll — évolution des vibrations dans le temps. "
             "Axe X = temps, axe Y = fréquence (Hz), couleur = puissance.",
             wordWrap=True
         ))

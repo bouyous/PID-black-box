@@ -11,6 +11,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from analysis.analyzer import (  # noqa: E402
     AxisAnalysis,
     SessionAnalysis,
+    detect_flight_protocol,
     _erpm_to_motor_hz,
     _fill_pid_balance,
     _fill_step_response,
@@ -91,6 +92,39 @@ class AnalyzerRegressionTests(unittest.TestCase):
         self.assertGreater(aa.step_response_curve.sample_count, 0)
         self.assertEqual(len(aa.step_response_curve.time_ms), 160)
         self.assertGreater(aa.step_response_curve.peak, 0.8)
+
+    def test_flight_protocol_detects_single_log_phases(self):
+        fs = 100.0
+        n = int(60 * fs)
+        t = np.arange(n) / fs
+        throttle = np.full(n, 1200.0)
+        setpoint = np.zeros(n)
+        gyro = np.full(n, 20.0)
+
+        ramp = (t >= 25.0) & (t < 40.0)
+        throttle[ramp] = np.linspace(1100.0, 1900.0, int(ramp.sum()))
+
+        tune = (t >= 42.0) & (t < 55.0)
+        setpoint[tune] = 420.0
+        gyro[tune] = 360.0
+
+        df = pd.DataFrame({
+            "time_s": t,
+            "rcCommand[3]": throttle,
+            "setpoint[0]": setpoint,
+            "setpoint[1]": np.zeros(n),
+            "setpoint[2]": np.zeros(n),
+            "gyroADC[0]": gyro,
+            "gyroADC[1]": np.zeros(n),
+            "gyroADC[2]": np.zeros(n),
+        })
+
+        protocol = detect_flight_protocol(df, np.ones(n, dtype=bool), fs)
+
+        self.assertGreaterEqual(protocol.calm_reference_s, 20.0)
+        self.assertGreaterEqual(protocol.throttle_ramp_s, 10.0)
+        self.assertGreaterEqual(protocol.tune_maneuver_s, 10.0)
+        self.assertGreater(protocol.confidence, 0.80)
 
 
 class RecommenderRegressionTests(unittest.TestCase):

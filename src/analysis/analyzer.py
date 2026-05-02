@@ -143,6 +143,25 @@ class FlightTypeResult:
 
 
 @dataclass
+class FlightProtocolResult:
+    calm_reference_s: float = 0.0
+    throttle_ramp_s: float = 0.0
+    tune_maneuver_s: float = 0.0
+    confidence: float = 0.0
+    calm_windows: list[tuple[float, float]] = field(default_factory=list)
+    throttle_ramp_windows: list[tuple[float, float]] = field(default_factory=list)
+    tune_windows: list[tuple[float, float]] = field(default_factory=list)
+
+    @property
+    def label(self) -> str:
+        if self.confidence >= 0.80:
+            return "fort"
+        if self.confidence >= 0.55:
+            return "moyen"
+        return "limité"
+
+
+@dataclass
 class SessionAnalysis:
     axes: list[AxisAnalysis] = field(default_factory=list)
     sample_rate_hz: float = 0.0
@@ -158,6 +177,7 @@ class SessionAnalysis:
     low_throttle_maneuver_pct: float = 0.0
     warnings: list[str] = field(default_factory=list)
     flight_type: FlightTypeResult | None = None
+    protocol: FlightProtocolResult = field(default_factory=FlightProtocolResult)
 
 
 def analyze(df: pd.DataFrame, cfg: FlightConfig) -> SessionAnalysis:
@@ -214,8 +234,98 @@ def analyze(df: pd.DataFrame, cfg: FlightConfig) -> SessionAnalysis:
 
     result.axes[0].motor_imbalance = _motor_imbalance(df, fly_mask)
     result.flight_type = detect_flight_type(df, fly_mask)
+    result.protocol = detect_flight_protocol(df, fly_mask, result.sample_rate_hz)
 
     return result
+
+
+def detect_flight_protocol(df: pd.DataFrame, fly_mask: np.ndarray,
+                           fs: float) -> FlightProtocolResult:
+    """Détecte les phases utiles au diagnostic dans une session.
+
+    Le protocole n'est pas obligatoire. Il sert à qualifier la confiance :
+    une courte phase calme aide les filtres, les rampes gaz aident les
+    vibrations/harmoniques, et les grosses commandes restent indispensables
+    pour PID/FF/latence.
+    """
+    fs = max(float(fs or _infer_sample_rate(df)), 1.0)
+    n = len(df)
+    if n == 0:
+        return FlightProtocolResult()
+
+    sp_abs = np.zeros(n, dtype=np.float64)
+    gyro_abs = np.zeros(n, dtype=np.float64)
+    for axis in range(3):
+        sp_col = f'setpoint[{axis}]'
+        gyro_col = f'gyroADC[{axis}]'
+        if sp_col in df.columns:
+            sp_abs = np.maximum(sp_abs, np.abs(df[sp_col].to_numpy(dtype=np.float64)))
+        if gyro_col in df.columns:
+            gyro_abs = np.maximum(gyro_abs, np.abs(df[gyro_col].to_numpy(dtype=np.float64)))
+
+    time = df['time_s'].to_numpy(dtype=np.float64) if 'time_s' in df.columns else np.arange(n) / fs
+
+    calm = fly_mask & (sp_abs < 70) & (gyro_abs < 120)
+    calm_runs = _find_runs(calm, min_len=max(1, int(fs * 2.0)))
+    calm_s = float(max((e - s for s, e in calm_runs), default=0) / fs)
+
+    ramp_s = 0.0
+    ramp_runs: list[tuple[int, int]] = []
+    if 'rcCommand[3]' in df.columns:
+        thr = df['rcCommand[3]'].to_numpy(dtype=np.float64)
+        norm = np.clip((thr - 1000.0) / 1000.0, 0.0, 1.0)
+        if len(norm) > 1:
+            dthr = np.gradient(_smooth_for_protocol(norm, fs, seconds=0.45)) * fs
+            ramp = (
+                fly_mask
+                & (norm > 0.08)
+                & (norm < 0.92)
+                & (np.abs(dthr) > 0.025)
+                & (np.abs(dthr) < 1.8)
+            )
+            ramp_runs = _find_runs(ramp, min_len=max(1, int(fs * 0.25)))
+            ramp_s = float(sum(e - s for s, e in ramp_runs) / fs)
+
+    tune = fly_mask & ((sp_abs > 160) | (gyro_abs > 260))
+    tune_runs = _find_runs(tune, min_len=max(1, int(fs * 0.05)))
+    tune_s = float(sum(e - s for s, e in tune_runs) / fs)
+
+    calm_score = min(calm_s / 25.0, 1.0)
+    ramp_score = min(ramp_s / 12.0, 1.0)
+    tune_score = min(tune_s / 5.0, 1.0)
+    confidence = 0.25 * calm_score + 0.30 * ramp_score + 0.45 * tune_score
+    return FlightProtocolResult(
+        calm_reference_s=float(calm_s),
+        throttle_ramp_s=float(ramp_s),
+        tune_maneuver_s=float(tune_s),
+        confidence=float(min(confidence, 1.0)),
+        calm_windows=_runs_to_windows(calm_runs, time, limit=3),
+        throttle_ramp_windows=_runs_to_windows(ramp_runs, time, limit=6),
+        tune_windows=_runs_to_windows(tune_runs, time, limit=8),
+    )
+
+
+def _smooth_for_protocol(values: np.ndarray, fs: float, seconds: float) -> np.ndarray:
+    win = max(3, int(fs * seconds))
+    if win >= len(values):
+        win = max(3, len(values) // 2)
+    if win <= 3:
+        return values
+    kernel = np.ones(win, dtype=np.float64) / win
+    return np.convolve(values, kernel, mode='same')
+
+
+def _runs_to_windows(runs: list[tuple[int, int]], time: np.ndarray,
+                     limit: int = 5) -> list[tuple[float, float]]:
+    out: list[tuple[float, float]] = []
+    if len(time) == 0:
+        return out
+    last = len(time) - 1
+    for start, end in sorted(runs, key=lambda r: r[1] - r[0], reverse=True)[:limit]:
+        s = max(0, min(start, last))
+        e = max(0, min(end - 1, last))
+        out.append((float(time[s]), float(time[e])))
+    return sorted(out)
 
 
 def detect_flight_type(df: pd.DataFrame, fly_mask: np.ndarray) -> FlightTypeResult:

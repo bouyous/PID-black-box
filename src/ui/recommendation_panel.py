@@ -179,9 +179,36 @@ _FLIGHT_TYPE_ICON = {
 }
 
 
+def _protocol_line(title: str, seconds: float, good_s: float,
+                   partial_s: float, detail: str) -> QLabel:
+    if seconds >= good_s:
+        status = "OK"
+        color = '#27ae60'
+    elif seconds >= partial_s:
+        status = "partiel"
+        color = '#f39c12'
+    else:
+        status = "faible"
+        color = '#e67e22'
+    return _label(
+        f"{status} - {title} : {seconds:.0f}s, {detail}.",
+        bold=status == "OK",
+        color=color,
+        size=10,
+    )
+
+
+def _format_protocol_windows(windows: list[tuple[float, float]]) -> str:
+    if not windows:
+        return "fenêtre principale non isolée"
+    parts = [f"{start:.0f}-{end:.0f}s" for start, end in windows[:3]]
+    return "moments détectés : " + ", ".join(parts)
+
+
 class ContextTab(QWidget):
     def __init__(self, cfg: FlightConfig, drone_size: str,
-                 flight_type: FlightTypeResult | None = None):
+                 flight_type: FlightTypeResult | None = None,
+                 session_analysis: SessionAnalysis | None = None):
         super().__init__()
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -221,6 +248,60 @@ class ContextTab(QWidget):
                 color='#888', size=10
             ))
             layout.addWidget(ft_box)
+
+        # --- Protocole Blackbox détecté ---
+        if session_analysis is not None:
+            protocol = session_analysis.protocol
+            proto_box = QGroupBox("Protocole Blackbox détecté")
+            proto_box.setStyleSheet(
+                "QGroupBox { color: #aaa; border: 1px solid #333; "
+                "border-radius:4px; margin-top:8px; padding:8px; }"
+                "QGroupBox::title { subcontrol-origin: margin; left:8px; }"
+            )
+            proto_layout = QVBoxLayout(proto_box)
+            proto_layout.setSpacing(5)
+            proto_color = '#27ae60' if protocol.confidence >= 0.80 else (
+                '#f39c12' if protocol.confidence >= 0.55 else '#e67e22'
+            )
+            proto_layout.addWidget(_label(
+                f"Confiance protocole : {protocol.label.upper()} "
+                f"({protocol.confidence * 100:.0f}%)",
+                bold=True, color=proto_color, size=13
+            ))
+            proto_layout.addWidget(_protocol_line(
+                "Référence calme",
+                protocol.calm_reference_s,
+                good_s=20.0,
+                partial_s=10.0,
+                detail="utile pour lire le bruit mécanique et démarrer les filtres",
+            ))
+            proto_layout.addWidget(_label(
+                _format_protocol_windows(protocol.calm_windows),
+                color='#888', size=9,
+            ))
+            proto_layout.addWidget(_protocol_line(
+                "Rampes de gaz",
+                protocol.throttle_ramp_s,
+                good_s=12.0,
+                partial_s=5.0,
+                detail="utile pour harmoniques moteur, TPA, sag et vibrations selon throttle",
+            ))
+            proto_layout.addWidget(_label(
+                _format_protocol_windows(protocol.throttle_ramp_windows),
+                color='#888', size=9,
+            ))
+            proto_layout.addWidget(_protocol_line(
+                "Vol tune",
+                protocol.tune_maneuver_s,
+                good_s=8.0,
+                partial_s=3.0,
+                detail="indispensable pour PID, feedforward, latence, rebonds et propwash",
+            ))
+            proto_layout.addWidget(_label(
+                _format_protocol_windows(protocol.tune_windows),
+                color='#888', size=9,
+            ))
+            layout.addWidget(proto_box)
 
         # --- Hardware ---
         hw = QGroupBox("Hardware")
@@ -1682,28 +1763,30 @@ def _flight_plan_steps(report: DiagnosticReport) -> list[tuple[str, str, Severit
     profile = f"{report.drone_size} / {report.flying_style}".strip()
     return [
         (
-            "Log 1 - Structure et filtres",
-            "2 a 3 minutes dans un endroit calme, si possible sans vent. "
-            "Vol propre: lignes droites, virages doux, peu de grosses commandes. "
-            "But: isoler resonances frame, moteurs, helices, RPM filter et bruit gyro.",
+            "Phase 1 - Référence calme courte",
+            "20 a 40 secondes suffisent souvent. Vol stationnaire ou lignes tres douces, "
+            "si possible sans vent. But: isoler bruit de base, resonances frame, moteurs, "
+            "helices, RPM filter et bruit gyro. Utile pour les filtres, pas pour juger les PID.",
             Severity.INFO,
         ),
         (
-            "Log 2 - Rampes de gaz",
-            "Partir bas gaz, monter progressivement jusqu'au plein gaz, redescendre progressivement. "
-            "Repeter 1 a 3 fois. But: voir sag, TPA, punch wobble, bruit D et vibrations selon throttle.",
+            "Phase 2 - Rampes de gaz",
+            "15 a 30 secondes. Partir bas gaz, monter progressivement jusqu'au plein gaz, "
+            "redescendre progressivement. Une ou deux rampes propres valent mieux que dix punchs. "
+            "But: voir sag, TPA, harmoniques moteur, bruit D et vibrations selon throttle.",
             Severity.INFO,
         ),
         (
-            "Log 3 - Ressenti pilote",
+            "Phase 3 - Vol tune obligatoire",
             "Freestyle controle: rolls, flips, yaw, reprises bas gaz, puis quelques mouvements combines. "
-            "But: lire latence, FF, rebonds fin de figure, propwash et tenue au vent.",
+            "C'est la phase indispensable pour lire latence, P/I/D, FF, rebonds fin de figure, "
+            "propwash et tenue au vent.",
             Severity.INFO,
         ),
         (
             f"Compromis du profil {profile}",
-            "5 pouces: reactivite et faible latence. 7/10 pouces: plus de douceur, moins de corrections inutiles, "
-            "meilleure tenue au vent et autonomie, sans rendre le drone mou.",
+            "Une seule blackbox peut contenir les trois phases. Si la memoire est courte, "
+            "priorite au vol tune, puis rampes gaz, puis reference calme.",
             Severity.OK,
         ),
     ]
@@ -1860,11 +1943,12 @@ class DiagnosticWidget(QWidget):
         if report.has_issues():
             start = 1
         elif report.matched_symptoms:
-            start = 3
+            start = 4
 
         layout.addWidget(SideNavStack("Diagnostic", [
-            ("📋", "Contexte", ContextTab(cfg, drone_size, flight_type)),
+            ("📋", "Contexte", ContextTab(cfg, drone_size, flight_type, sa)),
             ("🔍", "Recommandations", RecommendationsTab(report)),
+            ("💻", "CLI prêt", CliDumpTab(report)),
             ("⏱", "Latence", LatencyTab(report, sa, cfg)),
             ("🩺", "Symptômes", SymptomTab(report)),
             ("✅", "Check OK", CheckOKTab(report, sa, cfg)),

@@ -625,6 +625,29 @@ def generate_report(session: SessionAnalysis, cfg: FlightConfig,
         )
     if session.sample_rate_hz > 0:
         report.summary.append(f"Échantillonnage : {session.sample_rate_hz:.0f}Hz")
+    if session.protocol.confidence > 0 or any((
+        session.protocol.calm_reference_s,
+        session.protocol.throttle_ramp_s,
+        session.protocol.tune_maneuver_s,
+    )):
+        p = session.protocol
+        report.summary.append(
+            f"Protocole blackbox : confiance {p.label} "
+            f"({p.confidence * 100:.0f}%) - "
+            f"calme {p.calm_reference_s:.0f}s, "
+            f"rampes gaz {p.throttle_ramp_s:.0f}s, "
+            f"vol tune {p.tune_maneuver_s:.0f}s."
+        )
+        if p.tune_maneuver_s < 3.0:
+            report.warnings.append(
+                "Vol tune trop pauvre : les recommandations PID/FF/latence "
+                "seront moins fiables sans rolls, flips, yaw et reprises bas gaz."
+            )
+        if p.throttle_ramp_s < 5.0:
+            report.warnings.append(
+                "Rampes de gaz absentes ou trop courtes : le diagnostic vibrations, "
+                "TPA et harmoniques moteur manque de donnees sur toute la plage gaz."
+            )
     if cfg.board:
         report.summary.append(f"FC : {cfg.board}")
     report.summary.append(f"Style : {flying_style} — cibles exigentes appliquées.")
